@@ -321,7 +321,6 @@ class PyTorchBacktestFramework:
                 continue
                 
             current_features, current_stock_ids, actual_returns = stock_data_by_day[day_idx]
-            print(np.max(current_stock_ids))
             
             # Check if we need to rebalance the portfolio
             if day_idx - last_rebalance_day >= self.rebalance_freq:

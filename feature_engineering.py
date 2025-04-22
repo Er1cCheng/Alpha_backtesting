@@ -59,7 +59,7 @@ class AutoencoderDataset(Dataset):
 
 
 class PyTorchFeatureEngineering:
-    def __init__(self, data_dict, device=None, stock_count = None):
+    def __init__(self, data_dict, encode, device=None, stock_count = None):
         """
         Initialize the PyTorch FeatureEngineering class with robust NaN handling.
         
