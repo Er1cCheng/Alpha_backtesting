@@ -59,7 +59,7 @@ class AutoencoderDataset(Dataset):
 
 
 class PyTorchFeatureEngineering:
-    def __init__(self, data_dict, device=None):
+    def __init__(self, data_dict, device=None, stock_count = None):
         """
         Initialize the PyTorch FeatureEngineering class with robust NaN handling.
         
@@ -85,6 +85,20 @@ class PyTorchFeatureEngineering:
         self.list_of_data = data_dict['list_of_data']
 
         print(f"From day {self.di.min()} to day {self.di.max()}")
+
+        if stock_count is not None:
+            # Boolean index for desired rows
+            mask = self.si < stock_count
+
+            self.x_data  = self.x_data[mask]
+            self.y_data  = self.y_data[mask]
+            self.si = self.si[mask]
+            self.di = self.di[mask]
+            self.raw_data = self.raw_data[mask]
+
+            print(f"Only including the top {stock_count} stocks:")
+            print(f"Shape of x_data: {self.x_data.shape}, Shape of raw_data: {self.raw_data.shape}, Max stock index: {self.si.max()}")
+            print(f"From day {self.di.min()} to day {self.di.max()}")
         
         # Initialize scalers (still use sklearn for preprocessing)
         self.alpha_scaler = StandardScaler()

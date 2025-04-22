@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--retrain_freq', type=int, default=20, help='Model retraining frequency in days')
     parser.add_argument('--output_dir', type=str, default='results', help='Directory to save results')
     parser.add_argument('--load_model', type=str, default=None, help='Path to load a pretrained model')
+    parser.add_argument('--stock_count', type=int, default=None, help='Choose the first k stocks to run')
     
     # Transformer specific arguments
     parser.add_argument('--d_model', type=int, default=128, help='Dimension of transformer model')
@@ -74,7 +75,7 @@ def main():
     
     # Feature engineering with PyTorch
     print("Performing PyTorch feature engineering...")
-    feature_eng = PyTorchFeatureEngineering(data_dict, device=args.device)
+    feature_eng = PyTorchFeatureEngineering(data_dict, device=args.device, stock_count = args.stock_count)
     train_test_dict = feature_eng.generate_features(output_dir=args.output_dir)
     
     # Initialize model based on model_type
