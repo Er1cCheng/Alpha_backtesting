@@ -43,6 +43,10 @@ def main():
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate')
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--retrain', action='store_true', help='force to train the model')
+
+    # Feature Engineering Control
+    parser.add_argument('--encode', action='store_true', help='Whether to use/train an autoencoder')
+    parser.add_argument('--sector', type=str, default=None, help='Stock filter for the prediction and portfolio')
     
     # PyTorch specific arguments
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
@@ -74,7 +78,7 @@ def main():
     
     # Feature engineering with PyTorch
     print("Performing PyTorch feature engineering...")
-    feature_eng = PyTorchFeatureEngineering(data_dict, device=args.device)
+    feature_eng = PyTorchFeatureEngineering(data_dict, args.encode, device=args.device)
     train_test_dict = feature_eng.generate_features(output_dir=args.output_dir)
     
     # Initialize model based on model_type
@@ -141,7 +145,7 @@ def main():
 
     # Run backtest
     print(f"Running backtest for {args.model_type} model from day {start_day_idx} to {end_day_idx}...")
-    _, portfolio_values, weights_history, metrics_history = backtest.run_backtest(
+    portfolio_values, weights_history, metrics_history, _ = backtest.run_backtest(
         model,
         optimizer,
         start_day_idx,

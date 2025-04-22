@@ -59,7 +59,7 @@ class AutoencoderDataset(Dataset):
 
 
 class PyTorchFeatureEngineering:
-    def __init__(self, data_dict, device=None):
+    def __init__(self, data_dict, encode, device=None):
         """
         Initialize the PyTorch FeatureEngineering class with robust NaN handling.
         
@@ -75,6 +75,8 @@ class PyTorchFeatureEngineering:
             self.device = torch.device(device)
             
         print(f"Using device: {self.device}")
+
+        self.encode = encode
         
         self.data_dict = data_dict
         self.x_data = data_dict['x_data']
@@ -240,6 +242,18 @@ class PyTorchFeatureEngineering:
         Returns:
             tuple: (train_embeddings, test_embeddings)
         """
+                
+        # Handle NaNs in training data
+        train_data = np.nan_to_num(train_data, nan=0.0)
+        test_data = np.nan_to_num(test_data, nan=0.0)
+        
+        # Normalize data
+        scaled_train_data = self.alpha_scaler.fit_transform(train_data)
+        scaled_test_data = self.alpha_scaler.transform(test_data)
+
+        if not self.encode:
+            return scaled_train_data, scaled_test_data
+
         # New loading functionality
         if load_path:
             encoder_path = os.path.join(load_path, 'alpha_encoder.pt')
@@ -251,15 +265,7 @@ class PyTorchFeatureEngineering:
                 self.autoencoder = torch.load(encoder_path, map_location=self.device, weights_only=False)
                 with open(scaler_path, 'rb') as f:
                     self.alpha_scaler = pickle.load(f)
-                    
-                # Check and handle NaNs in data before transformation
-                train_data = np.nan_to_num(train_data, nan=0.0)
-                test_data = np.nan_to_num(test_data, nan=0.0)
-                
-                # Transform data
-                scaled_train_data = self.alpha_scaler.transform(train_data)
-                scaled_test_data = self.alpha_scaler.transform(test_data)
-                
+
                 # Convert to tensors
                 train_tensor = torch.tensor(scaled_train_data, dtype=torch.float32).to(self.device)
                 test_tensor = torch.tensor(scaled_test_data, dtype=torch.float32).to(self.device)
@@ -278,14 +284,6 @@ class PyTorchFeatureEngineering:
                     test_embeddings = np.nan_to_num(test_embeddings, nan=0.0)
                 
                 return train_embeddings, test_embeddings
-                
-        # Handle NaNs in training data
-        train_data = np.nan_to_num(train_data, nan=0.0)
-        test_data = np.nan_to_num(test_data, nan=0.0)
-        
-        # Normalize data
-        scaled_train_data = self.alpha_scaler.fit_transform(train_data)
-        scaled_test_data = self.alpha_scaler.transform(test_data)
         
         # Convert to PyTorch datasets
         train_dataset = AutoencoderDataset(scaled_train_data)
