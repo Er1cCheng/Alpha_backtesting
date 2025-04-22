@@ -222,6 +222,8 @@ class PyTorchBacktestFramework:
         stock_data_by_day = {}
         features_map = {}  # Map of (day_idx, stock_id) to features
 
+        self.test_date = test_days[0]
+
         # Pre-load stock data for test period
         print("Preloading stock data...")
         for day_idx in test_days:
@@ -240,11 +242,12 @@ class PyTorchBacktestFramework:
             initial_training_start = time.time()
             
             # Define training window
-            train_window_start = max(start_day_idx - 252, np.min(self.train_test_dict['train_di']))
-            train_window_end = start_day_idx
+            train_window_start = np.min(self.train_test_dict['train_di'])
+            train_window_end = train_window_start + self.window_size
+            # train_window_start = max(start_day_idx - 252, )
+            # train_window_end = start_day_idx
             
-            # Check model type and use appropriate training method
-            if self.model_type == 'transformer':
+            while train_window_end < self.test_date:
                 # Use helper function to collect and prepare training data for transformer
                 model_has_been_trained, model = self.collect_and_prepare_training_data(
                     model,
@@ -256,14 +259,9 @@ class PyTorchBacktestFramework:
                     is_training=True,
                     device=model.device if hasattr(model, 'device') else 'cuda'
                 )
-            elif self.model_type == 'regression':
-                # For regression models, collect standard training data
-                model_has_been_trained, model = self.collect_and_prepare_regression_data(
-                    model,
-                    train_window_start,
-                    train_window_end,
-                    is_training=True
-                )
+
+                train_window_start += 1
+                train_window_end += 1
             
             # Calculate initial training time
             initial_training_time = time.time() - initial_training_start
@@ -332,53 +330,49 @@ class PyTorchBacktestFramework:
                 # Get predictions for current day using the appropriate method
                 predicted_returns = np.zeros(len(current_stock_ids))
                 
-                if model_has_been_trained:
-                    # Add timing for prediction
-                    predict_start = time.time()
-                    
-                    # Use appropriate prediction method based on model type
-                    if self.model_type == 'transformer':
-                        # Use prediction helper function for transformer
-                        predicted_returns = self.predict_with_efficient_gpu(
-                            current_stock_ids,
-                            day_idx,
-                            features_map,
-                            model,
-                            self.window_size, 
-                            device=model.device if hasattr(model, 'device') else 'cuda'
-                        )
-                    else:
-                        # Use regression prediction method
-                        predicted_returns = self.predict_with_regression(
-                            model,
-                            current_features,
-                            current_stock_ids
-                        )
-                    
-                    # Calculate prediction time
-                    predict_time = time.time() - predict_start
-                    prediction_times.append(predict_time)
-                    print(f"Prediction completed in {int(predict_time)} sec")
-                    
-                    # Calculate directional accuracy - compare signs of predicted vs actual returns
-                    for i, stock_id in enumerate(current_stock_ids):
-                        predicted = predicted_returns[i]
-                        actual = actual_returns[i]
-                        
-                        # Skip if either is zero (no direction)
-                        if predicted != 0 and actual != 0:
-                            total_prediction_count += 1
-                            # Check if both have the same sign (both positive or both negative)
-                            if (predicted > 0 and actual > 0) or (predicted < 0 and actual < 0):
-                                correct_direction_count += 1
-                    
-                    # Print current directional accuracy
-                    if total_prediction_count > 0:
-                        current_accuracy = correct_direction_count / total_prediction_count * 100
-                        print(f"Current directional accuracy: {current_accuracy:.2f}% ({correct_direction_count}/{total_prediction_count})")
+                # Add timing for prediction
+                predict_start = time.time()
+                
+                # Use appropriate prediction method based on model type
+                if self.model_type == 'transformer':
+                    # Use prediction helper function for transformer
+                    predicted_returns = self.predict_with_efficient_gpu(
+                        current_stock_ids,
+                        day_idx,
+                        features_map,
+                        model,
+                        self.window_size, 
+                        device=model.device if hasattr(model, 'device') else 'cuda'
+                    )
                 else:
-                    print("Warning: Model has not been trained yet.")
-                    predicted_returns = np.zeros(len(current_stock_ids))
+                    # Use regression prediction method
+                    predicted_returns = self.predict_with_regression(
+                        model,
+                        current_features,
+                        current_stock_ids
+                    )
+                
+                # Calculate prediction time
+                predict_time = time.time() - predict_start
+                prediction_times.append(predict_time)
+                print(f"Prediction completed in {int(predict_time)} sec")
+                
+                # Calculate directional accuracy - compare signs of predicted vs actual returns
+                for i, stock_id in enumerate(current_stock_ids):
+                    predicted = predicted_returns[i]
+                    actual = actual_returns[i]
+                    
+                    # Skip if either is zero (no direction)
+                    if predicted != 0 and actual != 0:
+                        total_prediction_count += 1
+                        # Check if both have the same sign (both positive or both negative)
+                        if (predicted > 0 and actual > 0) or (predicted < 0 and actual < 0):
+                            correct_direction_count += 1
+                
+                # Print current directional accuracy
+                if total_prediction_count > 0:
+                    current_accuracy = correct_direction_count / total_prediction_count * 100
+                    print(f"Current directional accuracy: {current_accuracy:.2f}% ({correct_direction_count}/{total_prediction_count})")
                 
                 # Add timing for portfolio optimization
                 optimize_start = time.time()
@@ -616,8 +610,9 @@ class PyTorchBacktestFramework:
         
         key = 'train_di' if is_training else 'test_di'
         # Get all training days in the specified window
-        train_days = sorted([d for d in np.unique(self.train_test_dict[key]) 
-                            if start_day <= d < end_day])
+        # train_days = sorted([d for d in np.unique(self.train_test_dict[key]) 
+        #                     if start_day <= d < end_day])
+        train_days = [i for i in range(start_day, end_day)]
 
         print(key, start_day, end_day, np.min(self.train_test_dict[key]), np.max(self.train_test_dict[key]))
         print("Days to train", train_days)
@@ -634,6 +629,8 @@ class PyTorchBacktestFramework:
         
         # Process all days at once
         for train_day in train_days:
+            is_training = train_day < self.test_date
+            
             features, stock_ids, returns = self.prepare_data_for_day(train_day, is_training=is_training)
             
             if features is not None and len(features) > 0:
