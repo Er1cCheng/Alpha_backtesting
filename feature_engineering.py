@@ -1,23 +1,81 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, Dropout
-from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import EarlyStopping
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 import os
 import pickle
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+import time
 
-class FeatureEngineering:
-    def __init__(self, data_dict):
+class PyTorchAutoencoder(nn.Module):
+    """
+    PyTorch Autoencoder for feature dimension reduction.
+    """
+    def __init__(self, input_dim, encoding_dim=50, hidden_dim=128, dropout_rate=0.2):
+        super(PyTorchAutoencoder, self).__init__()
+        
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, encoding_dim),
+            nn.ReLU()
+        )
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Linear(encoding_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, input_dim)
+        )
+    
+    def forward(self, x):
+        # Encode
+        encoded = self.encoder(x)
+        # Decode
+        decoded = self.decoder(encoded)
+        return decoded
+    
+    def encode(self, x):
+        return self.encoder(x)
+
+
+class AutoencoderDataset(Dataset):
+    """
+    Dataset for autoencoder training.
+    """
+    def __init__(self, data):
+        self.data = torch.tensor(data, dtype=torch.float32)
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx], self.data[idx]  # Input and target are the same for autoencoder
+
+
+class PyTorchFeatureEngineering:
+    def __init__(self, data_dict, device=None):
         """
-        Initialize the FeatureEngineering class with robust NaN handling.
+        Initialize the PyTorch FeatureEngineering class with robust NaN handling.
         
         Args:
             data_dict (dict): Dictionary containing dataset keys:
                 'x_data', 'y_data', 'si', 'di', 'raw_data', 'list_of_data'
+            device (str): Device to use ('cpu' or 'cuda')
         """
+        # Set device
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device)
+            
+        print(f"Using device: {self.device}")
+        
         self.data_dict = data_dict
         self.x_data = data_dict['x_data']
         self.y_data = data_dict['y_data']
@@ -25,8 +83,10 @@ class FeatureEngineering:
         self.di = data_dict['di']
         self.raw_data = data_dict['raw_data']
         self.list_of_data = data_dict['list_of_data']
+
+        print(f"From day {self.di.min()} to day {self.di.max()}")
         
-        # Initialize scalers
+        # Initialize scalers (still use sklearn for preprocessing)
         self.alpha_scaler = StandardScaler()
         self.raw_data_scaler = StandardScaler()
         
@@ -37,6 +97,9 @@ class FeatureEngineering:
         # Initialize imputers
         self.x_imputer = SimpleImputer(strategy='mean')
         self.raw_data_imputer = SimpleImputer(strategy='mean')
+        
+        # Initialize autoencoder
+        self.autoencoder = None
         
         # Track NaN statistics
         self._calculate_nan_statistics()
@@ -73,7 +136,7 @@ class FeatureEngineering:
             print(f"  Top 5 raw features with most NaNs:")
             for i, col in enumerate(worst_cols_raw):
                 print(f"    {self.list_of_data[col]}: {nan_pct_by_col_raw[col]:.2f}% NaNs")
-                
+    
     def _impute_input_data(self):
         """
         Impute missing values in input data.
@@ -88,7 +151,7 @@ class FeatureEngineering:
         imputed_raw_data = self.raw_data_imputer.fit_transform(self.raw_data)
         
         return imputed_x_data, imputed_raw_data
-        
+    
     def train_test_split(self, split_date_idx=4400):
         """
         Split the data into training and testing datasets based on a date index.
@@ -137,53 +200,55 @@ class FeatureEngineering:
             
         return train_test_dict, train_indices, test_indices
     
-    def build_autoencoder(self, input_dim, encoding_dim=50):
+    def build_autoencoder(self, input_dim, encoding_dim=50, hidden_dim=128, dropout_rate=0.2):
         """
-        Build an autoencoder for dimension reduction and feature extraction.
-        Added dropout for better regularization.
+        Build a PyTorch autoencoder for dimension reduction and feature extraction.
         
         Args:
             input_dim (int): Dimension of input features
             encoding_dim (int): Dimension of encoded representation
+            hidden_dim (int): Dimension of hidden layer
+            dropout_rate (float): Dropout rate for regularization
             
         Returns:
-            tuple: (encoder, autoencoder) models
+            PyTorchAutoencoder: The autoencoder model
         """
-        # Input layer
-        input_layer = Input(shape=(input_dim,))
+        # Create the autoencoder
+        self.autoencoder = PyTorchAutoencoder(
+            input_dim=input_dim,
+            encoding_dim=encoding_dim,
+            hidden_dim=hidden_dim,
+            dropout_rate=dropout_rate
+        ).to(self.device)
         
-        # Encoder layers with dropout
-        encoded = Dense(128, activation='relu')(input_layer)
-        encoded = Dropout(0.2)(encoded)  # Add dropout for regularization
-        encoded = Dense(encoding_dim, activation='relu')(encoded)
-        
-        # Decoder layers with dropout
-        decoded = Dense(128, activation='relu')(encoded)
-        decoded = Dropout(0.2)(decoded)  # Add dropout for regularization
-        decoded = Dense(input_dim, activation='linear')(decoded)
-        
-        # Models
-        autoencoder = Model(input_layer, decoded)
-        encoder = Model(input_layer, encoded)
-        
-        # Compile
-        autoencoder.compile(optimizer='adam', loss='mse')
-        
-        return encoder, autoencoder
+        return self.autoencoder
     
-    def extract_alpha_embeddings(self, train_data, test_data, encoding_dim=50, epochs=100, batch_size=256, save_path=None, load_path=None):
+    def extract_alpha_embeddings(self, train_data, test_data, encoding_dim=50, 
+                               epochs=100, batch_size=256, save_path=None, load_path=None):
         """
-        Extract alpha embeddings with robust NaN handling.
+        Extract alpha embeddings using PyTorch autoencoder with robust NaN handling.
+        
+        Args:
+            train_data (ndarray): Training data
+            test_data (ndarray): Testing data
+            encoding_dim (int): Dimension of encoded representation
+            epochs (int): Number of training epochs
+            batch_size (int): Batch size for training
+            save_path (str): Path to save the model
+            load_path (str): Path to load a pretrained model
+            
+        Returns:
+            tuple: (train_embeddings, test_embeddings)
         """
         # New loading functionality
         if load_path:
-            encoder_path = os.path.join(load_path, 'alpha_encoder.keras')
+            encoder_path = os.path.join(load_path, 'alpha_encoder.pt')
             scaler_path = os.path.join(load_path, 'alpha_scaler.pickle')
             
             if os.path.exists(encoder_path) and os.path.exists(scaler_path):
                 print("Loading pretrained autoencoder...")
                 # Load encoder and scaler
-                encoder = tf.keras.models.load_model(encoder_path)
+                self.autoencoder = torch.load(encoder_path, map_location=self.device, weights_only=False)
                 with open(scaler_path, 'rb') as f:
                     self.alpha_scaler = pickle.load(f)
                     
@@ -195,9 +260,15 @@ class FeatureEngineering:
                 scaled_train_data = self.alpha_scaler.transform(train_data)
                 scaled_test_data = self.alpha_scaler.transform(test_data)
                 
+                # Convert to tensors
+                train_tensor = torch.tensor(scaled_train_data, dtype=torch.float32).to(self.device)
+                test_tensor = torch.tensor(scaled_test_data, dtype=torch.float32).to(self.device)
+                
                 # Use the loaded encoder to generate embeddings
-                train_embeddings = encoder.predict(scaled_train_data)
-                test_embeddings = encoder.predict(scaled_test_data)
+                self.autoencoder.eval()
+                with torch.no_grad():
+                    train_embeddings = self.autoencoder.encode(train_tensor).cpu().numpy()
+                    test_embeddings = self.autoencoder.encode(test_tensor).cpu().numpy()
                 
                 # Verify there are no NaNs in the embeddings
                 if np.isnan(train_embeddings).any() or np.isnan(test_embeddings).any():
@@ -216,27 +287,75 @@ class FeatureEngineering:
         scaled_train_data = self.alpha_scaler.fit_transform(train_data)
         scaled_test_data = self.alpha_scaler.transform(test_data)
         
-        # Build autoencoder
-        encoder, autoencoder = self.build_autoencoder(train_data.shape[1], encoding_dim)
+        # Convert to PyTorch datasets
+        train_dataset = AutoencoderDataset(scaled_train_data)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        
+        # Build autoencoder if not already built
+        if self.autoencoder is None:
+            self.build_autoencoder(train_data.shape[1], encoding_dim)
         
         # Train autoencoder
-        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        autoencoder.fit(
-            scaled_train_data, scaled_train_data,
-            epochs=epochs,
-            batch_size=batch_size,
-            validation_split=0.2,
-            callbacks=[early_stopping],
-            verbose=1
-        )
+        optimizer = torch.optim.Adam(self.autoencoder.parameters(), lr=0.001)
+        criterion = nn.MSELoss()
         
-        # Save the models if a path is provided
+        # Training loop
+        self.autoencoder.train()
+        print(f"Training autoencoder for {epochs} epochs...")
+        start_time = time.time()
+        
+        best_loss = float('inf')
+        best_state = None
+        patience = 5
+        patience_counter = 0
+        
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            for batch_inputs, batch_targets in train_loader:
+                # Move to device
+                batch_inputs = batch_inputs.to(self.device)
+                batch_targets = batch_targets.to(self.device)
+                
+                # Forward pass
+                outputs = self.autoencoder(batch_inputs)
+                loss = criterion(outputs, batch_targets)
+                
+                # Backward pass and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                epoch_loss += loss.item() * batch_inputs.size(0)
+            
+            # Compute average epoch loss
+            avg_epoch_loss = epoch_loss / len(train_dataset)
+            
+            # Early stopping
+            if avg_epoch_loss < best_loss:
+                best_loss = avg_epoch_loss
+                best_state = self.autoencoder.state_dict().copy()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                # Load best model
+                self.autoencoder.load_state_dict(best_state)
+                break
+                
+            # Print progress
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_epoch_loss:.6f}")
+        
+        end_time = time.time()
+        print(f"Autoencoder training completed in {end_time - start_time:.2f} seconds")
+        
+        # Save the model if a path is provided
         if save_path:
             os.makedirs(save_path, exist_ok=True)
-            encoder_path = os.path.join(save_path, 'alpha_encoder.keras')
-            autoencoder_path = os.path.join(save_path, 'alpha_autoencoder.keras')
-            encoder.save(encoder_path)
-            autoencoder.save(autoencoder_path)
+            encoder_path = os.path.join(save_path, 'alpha_encoder.pt')
+            torch.save(self.autoencoder, encoder_path)
             
             # Also save the scaler
             scaler_path = os.path.join(save_path, 'alpha_scaler.pickle')
@@ -244,8 +363,13 @@ class FeatureEngineering:
                 pickle.dump(self.alpha_scaler, f)
         
         # Extract embeddings
-        train_embeddings = encoder.predict(scaled_train_data)
-        test_embeddings = encoder.predict(scaled_test_data)
+        self.autoencoder.eval()
+        with torch.no_grad():
+            train_tensor = torch.tensor(scaled_train_data, dtype=torch.float32).to(self.device)
+            test_tensor = torch.tensor(scaled_test_data, dtype=torch.float32).to(self.device)
+            
+            train_embeddings = self.autoencoder.encode(train_tensor).cpu().numpy()
+            test_embeddings = self.autoencoder.encode(test_tensor).cpu().numpy()
         
         # Verify there are no NaNs in the embeddings
         if np.isnan(train_embeddings).any() or np.isnan(test_embeddings).any():
@@ -256,10 +380,10 @@ class FeatureEngineering:
         
         return train_embeddings, test_embeddings
     
-    def calculate_technical_indicators(self, stock_ids, day_indices, close_prices, high_prices, low_prices, volumes, window_sizes=[5, 10, 20, 50]):
+    def calculate_technical_indicators(self, stock_ids, day_indices, close_prices, high_prices, 
+                                     low_prices, volumes, window_sizes=[5, 10, 20, 50]):
         """
-        Calculate technical indicators for all stocks at once using vectorized operations.
-        With completely redesigned volatility calculation to prevent NaNs.
+        Calculate technical indicators using PyTorch for vectorized operations.
         
         Args:
             stock_ids (ndarray): Array of stock indices
@@ -273,13 +397,6 @@ class FeatureEngineering:
         Returns:
             ndarray: Array with technical indicators
         """
-        # Log NaN values in input data
-        print(f"Input NaN analysis:")
-        print(f"  Close prices: {np.isnan(close_prices).sum()} NaNs")
-        print(f"  High prices: {np.isnan(high_prices).sum()} NaNs")
-        print(f"  Low prices: {np.isnan(low_prices).sum()} NaNs")
-        print(f"  Volumes: {np.isnan(volumes).sum()} NaNs")
-        
         # Handle NaNs in input data
         close_prices = np.nan_to_num(close_prices, nan=np.nanmean(close_prices))
         high_prices = np.nan_to_num(high_prices, nan=np.nanmean(high_prices))
@@ -545,7 +662,7 @@ class FeatureEngineering:
     def generate_features(self, window_sizes=[5, 10, 20, 50], encoding_dim=50, output_dir=None):
         """
         Generate features by combining alpha embeddings, technical indicators, and encoded categories.
-        With comprehensive NaN handling throughout the pipeline and ensuring training/testing feature consistency.
+        With PyTorch implementation for enhanced performance.
         
         Args:
             window_sizes (list): List of window sizes for technical indicators
@@ -555,7 +672,7 @@ class FeatureEngineering:
         Returns:
             dict: Dictionary containing training and testing datasets with engineered features
         """
-        print("\n=== Starting Feature Generation Pipeline ===\n")
+        print("\n=== Starting PyTorch Feature Generation Pipeline ===\n")
         
         # Create output directory if it doesn't exist
         if output_dir:
@@ -565,8 +682,8 @@ class FeatureEngineering:
         print("Splitting data into training and testing sets...")
         train_test_dict, train_indices, test_indices = self.train_test_split()
         
-        # Extract alpha embeddings
-        print("\nExtracting alpha embeddings...")
+        # Extract alpha embeddings using PyTorch autoencoder
+        print("\nExtracting alpha embeddings with PyTorch autoencoder...")
         train_embeddings, test_embeddings = self.extract_alpha_embeddings(
             train_test_dict['train_x'],
             train_test_dict['test_x'],
@@ -599,7 +716,7 @@ class FeatureEngineering:
             window_sizes=window_sizes
         )
         
-        # Encode categorical features - using the new method that ensures consistent features
+        # Encode categorical features - using the method that ensures consistent features
         print("\nEncoding categorical features...")
         train_encoded_sector, train_encoded_industry, test_encoded_sector, test_encoded_industry = self.encode_categorical_features(
             train_test_dict['train_sector'],
@@ -648,13 +765,13 @@ class FeatureEngineering:
         # Combine all features
         print("\nCombining all features...")
         train_features = np.hstack((
-            train_test_dict['train_x'],  # Original alpha signals
-            train_embeddings,            # Alpha embeddings
-            train_tech_indicators,       # Technical indicators
-            train_encoded_sector,        # Encoded sector
-            train_encoded_industry,      # Encoded industry
-            scaled_train_spx_vix,        # Normalized SPX and VIX
-            train_ann_features           # Announcement features
+            train_test_dict['train_x'],      # Original alpha signals
+            train_embeddings,                # Alpha embeddings
+            train_tech_indicators,           # Technical indicators
+            train_encoded_sector,            # Encoded sector
+            train_encoded_industry,          # Encoded industry
+            scaled_train_spx_vix,            # Normalized SPX and VIX
+            train_ann_features               # Announcement features
         ))
         
         test_features = np.hstack((
@@ -701,7 +818,7 @@ class FeatureEngineering:
         train_test_dict['unique_stocks'] = np.unique(self.si)
         train_test_dict['unique_days'] = np.unique(self.di)
         
-        print("\n=== Feature Generation Complete ===")
+        print("\n=== PyTorch Feature Generation Complete ===")
         print(f"Training features shape: {train_features.shape}")
         print(f"Testing features shape: {test_features.shape}")
         print(f"Feature consistency verified: {train_features.shape[1] == test_features.shape[1]}")
