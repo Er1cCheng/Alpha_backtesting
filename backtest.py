@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import gc
 
 class PyTorchBacktestFramework:
-    def __init__(self, train_test_dict, model_type, window_size=20, rebalance_freq=5):
+    def __init__(self, train_test_dict, model_type, window_size=20, rebalance_freq=5, stock_count = None):
         """
         Initialize the PyTorch-specific backtest framework.
         
@@ -24,6 +24,7 @@ class PyTorchBacktestFramework:
         self.window_size = window_size
         self.rebalance_freq = rebalance_freq
         self.model_type = model_type
+        self.stock_count = stock_count if stock_count is not None else len(train_test_dict['unique_stocks'])
         
     def prepare_data_for_day(self, day_idx, is_training=True):
         """
@@ -246,7 +247,8 @@ class PyTorchBacktestFramework:
             if self.model_type == 'transformer':
                 # Use helper function to collect and prepare training data for transformer
                 model_has_been_trained, model = self.collect_and_prepare_training_data(
-                    model, 
+                    model,
+                    self.model_type,
                     train_window_start, 
                     train_window_end, 
                     features_map, 
@@ -321,6 +323,7 @@ class PyTorchBacktestFramework:
                 continue
                 
             current_features, current_stock_ids, actual_returns = stock_data_by_day[day_idx]
+            print(np.max(current_stock_ids))
             
             # Check if we need to rebalance the portfolio
             if day_idx - last_rebalance_day >= self.rebalance_freq:
@@ -387,7 +390,7 @@ class PyTorchBacktestFramework:
                 
                 # Create stock ID lookup array for quick vectorized mapping
                 max_stock_id = np.max(unique_current_stocks)
-                stock_row_lookup = np.zeros(max_stock_id + 1, dtype=int) - 1
+                stock_row_lookup = np.zeros(self.stock_count + 1, dtype=int) - 1
                 stock_row_lookup[unique_current_stocks] = np.arange(n_stocks)
                 
                 # Pre-allocate historical returns matrix

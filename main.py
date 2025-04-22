@@ -104,7 +104,8 @@ def main():
         train_test_dict, 
         args.model_type, 
         window_size=args.window_size, 
-        rebalance_freq=args.rebalance_freq
+        rebalance_freq=args.rebalance_freq,
+        stock_count = args.stock_count
     )
     
     # Determine test period
