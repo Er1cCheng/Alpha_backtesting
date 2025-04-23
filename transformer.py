@@ -344,11 +344,11 @@ class TimeSeriesTransformer:
                         break
                 
                 # Print epoch results
-                if verbose > 0:
+                if verbose > 0 and ((epoch + 1) % 10) == 0:
                     print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f} - Train MAE: {avg_train_mae:.4f} - Val Loss: {avg_val_loss:.4f} - Val MAE: {avg_val_mae:.4f}")
             else:
                 # Print train-only results
-                if verbose > 0:
+                if verbose > 0 and ((epoch + 1) % 10) == 0:
                     print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f} - Train MAE: {avg_train_mae:.4f}")
                 
                 # For train-only mode, save the model if loss improved

@@ -103,95 +103,6 @@ class PyTorchBacktestFramework:
         else:
             return None, []
 
-    def _prepare_time_series_data_batched(self, stock_ids, day_indices, features, returns, window_size, batch_size=100):
-        """
-        Optimized implementation to prepare time series data efficiently.
-        Processes all data at once without chunking for better performance.
-        
-        Args:
-            stock_ids (ndarray): Stock IDs
-            day_indices (ndarray): Day indices
-            features (ndarray): Feature matrix
-            returns (ndarray): Returns
-            window_size (int): Lookback window size
-            
-        Returns:
-            tuple: (X, y) where X is the input sequences and y is the target values
-        """
-        # Convert inputs to numpy arrays if they aren't already
-        stock_ids = np.asarray(stock_ids)
-        day_indices = np.asarray(day_indices)
-        features = np.asarray(features)
-        returns = np.asarray(returns)
-        
-        # Create dataframe for organization - this doesn't copy the data
-        df = pd.DataFrame({
-            'stock_id': stock_ids,
-            'day_idx': day_indices,
-            'return': returns,
-            'feature_idx': np.arange(len(stock_ids))  # Index to access features
-        })
-        
-        # Sort by stock_id and day_idx (this creates a view, not a full copy)
-        df = df.sort_values(['stock_id', 'day_idx'])
-
-        for stock_id, stock_df in df.groupby('stock_id'):
-            L = len(stock_df)
-            break
-
-        n_batch = (L - window_size + batch_size - 1) // batch_size
-
-        for batch_idx in range(n_batch):
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, len(stock_df) - window_size - 1)
-            print('Now training', batch_start, batch_end)
-        
-            # Create lists to store sequences and targets
-            sequences = []
-            targets = []
-            
-            # Process each stock in one pass
-            for stock_id, stock_df in df.groupby('stock_id'):
-                # print(stock_id, sequences, len(stock_df), window_size)
-                if len(stock_df) <= window_size:
-                    continue
-
-                batch_end = min(batch_end, len(stock_df) - window_size)
-                
-                # Sort by day (this creates a view, not a copy)
-                stock_df = stock_df.sort_values('day_idx').reset_index(drop=True)
-                
-                # Get all feature indices for this stock
-                feature_indices = stock_df['feature_idx'].values
-                
-                # Efficiently create sequences using vectorized operations
-                # This creates a sliding window over the feature indices array
-                for i in range(batch_start, batch_end):
-                    # Extract window indices and target index
-                    window_indices = feature_indices[i:i+window_size]
-                    target_idx = feature_indices[i+window_size]
-                    
-                    # Skip invalid indices
-                    if np.any(window_indices >= len(features)) or target_idx >= len(returns):
-                        continue
-                    
-                    # Add sequence and target to lists
-                    sequence = features[window_indices]
-                    target = returns[target_idx]
-                    
-                    # Only add valid sequences
-                    if not np.isnan(target) and not np.any(np.isnan(sequence)):
-                        sequences.append(sequence)
-                        targets.append(target)
-            
-            # Convert to arrays all at once (single memory allocation)
-            if sequences:
-                X = np.array(sequences)
-                y = np.array(targets)
-                yield X, y
-            else:
-                yield np.array([]), np.array([])
-
     def run_backtest(self, model, optimizer, start_day_idx, end_day_idx, retrain_freq=20, disable_retraining=False):
         """
         Run a backtest using PyTorch implementation optimized for TimeSeriesTransformer and regression models.
@@ -241,8 +152,8 @@ class PyTorchBacktestFramework:
 
         # Pre-load stock data for test period
         print("Preloading stock data...")
-        for day_idx in test_days:
-            features, stock_ids, returns = self.prepare_data_for_day(day_idx, is_training=False)
+        for day_idx in range(np.min(self.train_test_dict['train_di']), end_day_idx+1):
+            features, stock_ids, returns = self.prepare_data_for_day(day_idx, is_training=day_idx<self.test_date)
             if features is not None:
                 stock_data_by_day[day_idx] = (features, stock_ids, returns)
                 # Store in the features map for efficient sequence building
@@ -290,7 +201,7 @@ class PyTorchBacktestFramework:
 
         # Run the backtest
         for i, day_idx in enumerate(test_days):
-            print(f"Backtesting day {i+1}/{len(test_days)} (Day index: {day_idx})")
+            print(f"\n---- Backtesting day {i+1}/{len(test_days)} (Day index: {day_idx}) ----")
             
             # Check if we need to retrain the model
             if not disable_retraining and day_idx - last_retrain_day >= retrain_freq:
@@ -376,7 +287,6 @@ class PyTorchBacktestFramework:
                         current_features,
                         current_stock_ids
                     )
-                print(type(model))
                 
                 # Calculate prediction time
                 predict_time = time.time() - predict_start
@@ -406,7 +316,7 @@ class PyTorchBacktestFramework:
                 # Estimate covariance matrix using vectorized operations
                 unique_current_stocks = np.unique(current_stock_ids)
                 n_stocks = len(unique_current_stocks)
-                max_history_length = min(60, day_idx - test_days[0])
+                max_history_length = 60
                 
                 # Create stock ID lookup array for quick vectorized mapping
                 max_stock_id = np.max(unique_current_stocks)
@@ -418,7 +328,7 @@ class PyTorchBacktestFramework:
                 data_present = np.zeros((n_stocks, max_history_length), dtype=bool)
                 
                 # Process all historical days at once
-                for col_idx, hist_day in enumerate(range(max(day_idx - 60, test_days[0]), day_idx)):
+                for col_idx, hist_day in enumerate(range(day_idx - 60, day_idx)):
                     if hist_day in stock_data_by_day:
                         hist_stock_ids, hist_returns = stock_data_by_day[hist_day][1:3]
                         
@@ -616,6 +526,98 @@ class PyTorchBacktestFramework:
         
         return portfolio_values, weights_history, metrics_history, final_accuracy
 
+    def _prepare_time_series_data_batched(self, start_day, end_day, stock_ids, day_indices, features, returns, window_size, batch_size=100):
+        """
+        Optimized implementation to prepare time series data efficiently.
+        Processes all data at once without chunking for better performance.
+        
+        Args:
+            stock_ids (ndarray): Stock IDs
+            day_indices (ndarray): Day indices
+            features (ndarray): Feature matrix
+            returns (ndarray): Returns
+            window_size (int): Lookback window size
+            
+        Returns:
+            tuple: (X, y) where X is the input sequences and y is the target values
+        """
+        # Convert inputs to numpy arrays if they aren't already
+        stock_ids = np.asarray(stock_ids)
+        day_indices = np.asarray(day_indices)
+        features = np.asarray(features)
+        returns = np.asarray(returns)
+        
+        # Create dataframe for organization - this doesn't copy the data
+        df = pd.DataFrame({
+            'stock_id': stock_ids,
+            'day_idx': day_indices,
+            'return': returns,
+            'feature_idx': np.arange(len(stock_ids))  # Index to access features
+        })
+        
+        # Sort by stock_id and day_idx (this creates a view, not a full copy)
+        df = df.sort_values(['stock_id', 'day_idx'])
+
+        for stock_id, stock_df in df.groupby('stock_id'):
+            L = len(stock_df)
+            break
+
+        n_batch = (end_day - start_day - window_size + batch_size - 1) // batch_size
+
+        for batch_idx in range(n_batch):
+            batch_start = batch_idx * batch_size
+            batch_end = batch_start + batch_size
+            print(f'Now training {start_day + batch_start} to {start_day + batch_end}')
+        
+            # Create lists to store sequences and targets
+            sequences = []
+            targets = []
+            
+            # Process each stock in one pass
+            for stock_id, stock_df in df.groupby('stock_id'):
+                # print(stock_id, sequences, len(stock_df), window_size)
+                if len(stock_df) <= window_size:
+                    continue
+
+                batch_end = min(batch_end, len(stock_df) - window_size)
+                
+                # Sort by day (this creates a view, not a copy)
+                stock_df = stock_df.sort_values('day_idx').reset_index(drop=True)
+                
+                # Get all feature indices for this stock
+                feature_indices = stock_df['feature_idx'].values
+                
+                # Efficiently create sequences using vectorized operations
+                # This creates a sliding window over the feature indices array
+                for i in range(batch_start, batch_end):
+                    if i + window_size >= len(feature_indices):
+                        break
+
+                    # Extract window indices and target index
+                    window_indices = feature_indices[i:i+window_size]
+                    target_idx = feature_indices[i+window_size]
+                    
+                    # Skip invalid indices
+                    if np.any(window_indices >= len(features)) or target_idx >= len(returns):
+                        continue
+                    
+                    # Add sequence and target to lists
+                    sequence = features[window_indices] + [stock_id]
+                    target = returns[target_idx]
+                    
+                    # Only add valid sequences
+                    if not np.isnan(target) and not np.any(np.isnan(sequence)):
+                        sequences.append(sequence)
+                        targets.append(target)
+            
+            # Convert to arrays all at once (single memory allocation)
+            if sequences:
+                X = np.array(sequences)
+                y = np.array(targets)
+                yield X, y
+            else:
+                yield np.array([]), np.array([])
+
     def collect_and_prepare_training_data(self, model, model_type, start_day, end_day, features_map, window_size, is_training=False, device='cuda'):
         """
         Efficient function to collect and prepare training data with GPU optimization.
@@ -633,11 +635,7 @@ class PyTorchBacktestFramework:
             tuple: (trained_model_flag, model) - Flag if model was trained, and the model
         """
         import contextlib
-        
-        key = 'train_di' if is_training else 'test_di'
-        # Get all training days in the specified window
-        # train_days = sorted([d for d in np.unique(self.train_test_dict[key]) 
-        #                     if start_day <= d < end_day])
+
         train_days = [i for i in range(start_day, end_day)]
         
         if len(train_days) == 0:
@@ -689,6 +687,7 @@ class PyTorchBacktestFramework:
         else:
             # Prepare time series data (single pass)
             for X_train, y_train in self._prepare_time_series_data_batched(
+                start_day, end_day, 
                 train_stock_ids, train_day_indices, train_features, train_returns, window_size
             ):
                 # Check if we have valid sequences
