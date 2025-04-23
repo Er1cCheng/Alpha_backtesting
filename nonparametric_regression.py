@@ -389,22 +389,18 @@ class StockAwareKernelRegression:
             stock_X = X_train[idx]
             stock_y = y_train[idx]
             
-            # Check if we have enough data points
-            if len(stock_X) >= 100:  # Require at least 100 data points
-                # Create and fit a kernel regression model
-                model = KernelRegression(
-                    bandwidth=self.bandwidth, 
-                    kernel=self.kernel,
-                    n_neighbors=min(self.n_neighbors, len(stock_X)),
-                    n_jobs=1  # Use 1 job since we're already parallelizing at the stock level
-                )
-                try:
-                    model.fit(stock_X, stock_y, feature_names)
-                    return stock_id, model, len(stock_X)
-                except Exception as e:
-                    print(f"Error fitting model for stock {stock_id}: {e}")
-                    return stock_id, None, len(stock_X)
-            else:
+            # Create and fit a kernel regression model
+            model = KernelRegression(
+                bandwidth=self.bandwidth, 
+                kernel=self.kernel,
+                n_neighbors=min(self.n_neighbors, len(stock_X)),
+                n_jobs=1  # Use 1 job since we're already parallelizing at the stock level
+            )
+            try:
+                model.fit(stock_X, stock_y, feature_names)
+                return stock_id, model, len(stock_X)
+            except Exception as e:
+                print(f"Error fitting model for stock {stock_id}: {e}")
                 return stock_id, None, len(stock_X)
         
         # Use joblib for parallel processing if n_jobs > 1
@@ -484,10 +480,13 @@ class StockAwareKernelRegression:
         
         # Process each stock with a specific model
         unique_pred_stocks = np.unique(stock_ids)
+        print('pre', unique_pred_stocks, self.stock_models.keys())
         for stock_id in unique_pred_stocks:
+            print(stock_id, self.stock_models.keys())
             if stock_id in self.stock_models:
                 # Get indices for this stock
                 idx = stock_ids == stock_id
+                print(np.sum(idx))
                 if np.sum(idx) > 0:
                     # Use the stock-specific model to predict
                     y_pred[idx] = self.stock_models[stock_id].predict(X[idx])
@@ -659,6 +658,7 @@ class StockAwareKernelRegression:
         Make predictions using the stock-specific kernel regression models.
         Uses the global model as fallback.
         """
+        print('predict')
         if not self._is_fitted:
             raise ValueError("Model has not been fitted yet. Call fit() first.")
         
