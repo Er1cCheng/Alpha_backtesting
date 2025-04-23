@@ -34,7 +34,6 @@ def main():
     parser.add_argument('--retrain_freq', type=int, default=20, help='Model retraining frequency in days')
     parser.add_argument('--output_dir', type=str, default='results', help='Directory to save results')
     parser.add_argument('--load_model', type=str, default=None, help='Path to load a pretrained model')
-    parser.add_argument('--stock_count', type=int, default=None, help='Choose the first k stocks to run')
     
     # Transformer specific arguments
     parser.add_argument('--d_model', type=int, default=128, help='Dimension of transformer model')
@@ -47,7 +46,21 @@ def main():
 
     # Feature Engineering Control
     parser.add_argument('--encode', action='store_true', help='Whether to use/train an autoencoder')
-    parser.add_argument('--sector', type=str, default=None, help='Stock filter for the prediction and portfolio')
+    parser.add_argument('--stock_count', type=int, default=None, help='Limit scope to the first k stocks')
+    parser.add_argument(
+        '--sector',
+        type=int,
+        nargs='+',
+        default=None,
+        help='Stock filter on sectors'
+    )
+    parser.add_argument(
+        '--industry',
+        type=int,
+        nargs='+',
+        default=None,
+        help='Stock filter on industries'
+    )
     
     # PyTorch specific arguments
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
@@ -79,7 +92,7 @@ def main():
     
     # Feature engineering with PyTorch
     print("Performing PyTorch feature engineering...")
-    feature_eng = PyTorchFeatureEngineering(data_dict, args.encode, device=args.device, stock_count = args.stock_count)
+    feature_eng = PyTorchFeatureEngineering(data_dict, args.encode, device=args.device, stock_count = args.stock_count, sector = args.sector, industry = args.industry)
     train_test_dict = feature_eng.generate_features(output_dir=args.output_dir)
     
     # Initialize model based on model_type
