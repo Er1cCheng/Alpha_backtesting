@@ -107,6 +107,7 @@ def main():
     backtest = PyTorchBacktestFramework(
         train_test_dict, 
         args.model_type, 
+        args.output_dir,
         window_size=args.window_size, 
         rebalance_freq=args.rebalance_freq,
         stock_count = args.stock_count

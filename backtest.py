@@ -8,9 +8,10 @@ from datetime import datetime
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 import gc
+import os
 
 class PyTorchBacktestFramework:
-    def __init__(self, train_test_dict, model_type, window_size=20, rebalance_freq=5, stock_count = None):
+    def __init__(self, train_test_dict, model_type, output_dir, window_size=20, rebalance_freq=5, stock_count = None):
         """
         Initialize the PyTorch-specific backtest framework.
         
@@ -23,6 +24,7 @@ class PyTorchBacktestFramework:
         self.train_test_dict = train_test_dict
         self.window_size = window_size
         self.rebalance_freq = rebalance_freq
+        self.output_dir = output_dir
         self.model_type = model_type
         self.stock_count = stock_count if stock_count is not None else np.max(train_test_dict['train_si']) + 1
         
@@ -101,7 +103,7 @@ class PyTorchBacktestFramework:
         else:
             return None, []
 
-    def _prepare_time_series_data_batched(self, stock_ids, day_indices, features, returns, window_size):
+    def _prepare_time_series_data_batched(self, stock_ids, day_indices, features, returns, window_size, batch_size=100):
         """
         Optimized implementation to prepare time series data efficiently.
         Processes all data at once without chunking for better performance.
@@ -132,50 +134,63 @@ class PyTorchBacktestFramework:
         
         # Sort by stock_id and day_idx (this creates a view, not a full copy)
         df = df.sort_values(['stock_id', 'day_idx'])
-        
-        # Create lists to store sequences and targets
-        sequences = []
-        targets = []
-        
-        # Process each stock in one pass
+
         for stock_id, stock_df in df.groupby('stock_id'):
-            # Skip if not enough data points
-            if len(stock_df) <= window_size:
-                continue
-            
-            # Sort by day (this creates a view, not a copy)
-            stock_df = stock_df.sort_values('day_idx').reset_index(drop=True)
-            
-            # Get all feature indices for this stock
-            feature_indices = stock_df['feature_idx'].values
-            
-            # Efficiently create sequences using vectorized operations
-            # This creates a sliding window over the feature indices array
-            for i in range(len(stock_df) - window_size):
-                # Extract window indices and target index
-                window_indices = feature_indices[i:i+window_size]
-                target_idx = feature_indices[i+window_size]
-                
-                # Skip invalid indices
-                if np.any(window_indices >= len(features)) or target_idx >= len(returns):
-                    continue
-                
-                # Add sequence and target to lists
-                sequence = features[window_indices]
-                target = returns[target_idx]
-                
-                # Only add valid sequences
-                if not np.isnan(target) and not np.any(np.isnan(sequence)):
-                    sequences.append(sequence)
-                    targets.append(target)
+            L = len(stock_df)
+            break
+
+        n_batch = (L - window_size + batch_size - 1) // batch_size
+
+        for batch_idx in range(n_batch):
+            batch_start = batch_idx * batch_size
+            batch_end = min(batch_start + batch_size, len(stock_df) - window_size - 1)
+            print('Now training', batch_start, batch_end)
         
-        # Convert to arrays all at once (single memory allocation)
-        if sequences:
-            X = np.array(sequences)
-            y = np.array(targets)
-            return X, y
-        else:
-            return np.array([]), np.array([])
+            # Create lists to store sequences and targets
+            sequences = []
+            targets = []
+            
+            # Process each stock in one pass
+            for stock_id, stock_df in df.groupby('stock_id'):
+                # print(stock_id, sequences, len(stock_df), window_size)
+                if len(stock_df) <= window_size:
+                    continue
+
+                batch_end = min(batch_end, len(stock_df) - window_size)
+                
+                # Sort by day (this creates a view, not a copy)
+                stock_df = stock_df.sort_values('day_idx').reset_index(drop=True)
+                
+                # Get all feature indices for this stock
+                feature_indices = stock_df['feature_idx'].values
+                
+                # Efficiently create sequences using vectorized operations
+                # This creates a sliding window over the feature indices array
+                for i in range(batch_start, batch_end):
+                    # Extract window indices and target index
+                    window_indices = feature_indices[i:i+window_size]
+                    target_idx = feature_indices[i+window_size]
+                    
+                    # Skip invalid indices
+                    if np.any(window_indices >= len(features)) or target_idx >= len(returns):
+                        continue
+                    
+                    # Add sequence and target to lists
+                    sequence = features[window_indices]
+                    target = returns[target_idx]
+                    
+                    # Only add valid sequences
+                    if not np.isnan(target) and not np.any(np.isnan(sequence)):
+                        sequences.append(sequence)
+                        targets.append(target)
+            
+            # Convert to arrays all at once (single memory allocation)
+            if sequences:
+                X = np.array(sequences)
+                y = np.array(targets)
+                yield X, y
+            else:
+                yield np.array([]), np.array([])
 
     def run_backtest(self, model, optimizer, start_day_idx, end_day_idx, retrain_freq=20, disable_retraining=False):
         """
@@ -247,6 +262,7 @@ class PyTorchBacktestFramework:
             # train_window_start = max(start_day_idx - 252, )
             # train_window_end = start_day_idx
             
+<<<<<<< HEAD
             while train_window_end < self.test_date:
                 # Use helper function to collect and prepare training data for transformer
                 model_has_been_trained, model = self.collect_and_prepare_training_data(
@@ -259,9 +275,26 @@ class PyTorchBacktestFramework:
                     is_training=True,
                     device=model.device if hasattr(model, 'device') else 'cuda'
                 )
+=======
+            # while train_window_end < self.test_date:
 
-                train_window_start += 1
-                train_window_end += 1
+            model_has_been_trained, model = self.collect_and_prepare_training_data(
+                model, 
+                self.model_type, 
+                train_window_start, 
+                self.test_date, 
+                features_map, 
+                self.window_size, 
+                is_training=True,
+                device=model.device if hasattr(model, 'device') else 'cuda'
+            )
+>>>>>>> master
+
+                # if train_window_start % 10 == 0:
+                #     print(f"Trained until {train_window_start} to {train_window_end}")
+
+                # train_window_start += 1
+                # train_window_end += 1
             
             # Calculate initial training time
             initial_training_time = time.time() - initial_training_start
@@ -282,8 +315,10 @@ class PyTorchBacktestFramework:
                 retrain_start = time.time()
                 
                 # Define retraining window
-                train_window_start = max(day_idx - 252, train_window_start)
-                
+                lim = day_idx - self.window_size
+                train_window_start = last_retrain_day - self.window_size
+
+                # while train_window_start < lim:
                 retrain_success, model = self.collect_and_prepare_training_data(
                     model, 
                     self.model_type, 
@@ -294,6 +329,11 @@ class PyTorchBacktestFramework:
                     is_training=False,
                     device=model.device if hasattr(model, 'device') else 'cuda'
                 )
+
+                    # if train_window_start % 10 == 0:
+                    #     print(f"Trained until {train_window_start} to {train_window_end}")
+                    
+                    # train_window_start += 1
                 
                 # Calculate retraining time
                 retrain_time = time.time() - retrain_start
@@ -309,6 +349,7 @@ class PyTorchBacktestFramework:
                     try:
                         if hasattr(model, 'save_model'):
                             checkpoint_path = f'{self.model_type}_checkpoint_day_{day_idx}.pt'
+                            checkpoint_path = os.path.join(self.output_dir, checkpoint_path)
                             model.save_model(checkpoint_path)
                             print(f"Saved model checkpoint to {checkpoint_path}")
                     except Exception as e:
@@ -350,6 +391,7 @@ class PyTorchBacktestFramework:
                         current_features,
                         current_stock_ids
                     )
+                print(type(model))
                 
                 # Calculate prediction time
                 predict_time = time.time() - predict_start
@@ -612,9 +654,6 @@ class PyTorchBacktestFramework:
         # train_days = sorted([d for d in np.unique(self.train_test_dict[key]) 
         #                     if start_day <= d < end_day])
         train_days = [i for i in range(start_day, end_day)]
-
-        print(key, start_day, end_day, np.min(self.train_test_dict[key]), np.max(self.train_test_dict[key]))
-        print("Days to train", train_days)
         
         if len(train_days) == 0:
             print("No training days found in the specified window.")
@@ -664,188 +703,93 @@ class PyTorchBacktestFramework:
             model.fit(train_features, train_returns)
         else:
             # Prepare time series data (single pass)
-            X_train, y_train = self._prepare_time_series_data_batched(
+            for X_train, y_train in self._prepare_time_series_data_batched(
                 train_stock_ids, train_day_indices, train_features, train_returns, window_size
-            )
-            
-            # Free more memory
-            del train_features, train_stock_ids, train_day_indices, train_returns
-            gc.collect()
-            
-            # Check if we have valid sequences
-            if len(X_train) == 0:
-                print("No valid sequences found for training.")
-                return False, model
-            
-            # Sample if dataset is too large
-            if len(X_train) > 10000:
-                print(f"Sampling {10000} sequences from {len(X_train)} for faster training...")
-                sample_indices = np.random.choice(len(X_train), size=10000, replace=False)
-                X_sample = X_train[sample_indices]
-                y_sample = y_train[sample_indices]
+            ):
+                # Check if we have valid sequences
+                if len(X_train) == 0:
+                    print("No valid sequences found for training.")
+                    return False, model
                 
-                # Free original data
+                # Sample if dataset is too large
+                if len(X_train) > 10000:
+                    print(f"Sampling {10000} sequences from {len(X_train)} for faster training...")
+                    sample_indices = np.random.choice(len(X_train), size=10000, replace=False)
+                    X_sample = X_train[sample_indices]
+                    y_sample = y_train[sample_indices]
+                    
+                    # Free original data
+                    del X_train, y_train
+                    gc.collect()
+                    
+                    # Update training data
+                    X_train = X_sample
+                    y_train = y_sample
+                    
+                    # Free sample arrays
+                    del X_sample, y_sample
+                    gc.collect()
+                
+                print(f"Training with {len(X_train)} sequences...")
+                
+                # Build model if needed
+                if model.model is None:
+                    model.build_model((X_train.shape[1], X_train.shape[2]))
+                
+                # Check if CUDA is available
+                if device == 'cuda' and not torch.cuda.is_available():
+                    print("CUDA requested but not available, falling back to CPU.")
+                    device = 'cpu'
+                
+                # Move model to device
+                if hasattr(model, 'model'):
+                    model.model.to(device)
+                
+                # Try GPU training if possible
+                try:
+                    if hasattr(model, 'fit_with_dataloader') and device == 'cuda':
+                        # Move data to GPU in a single operation
+                        X_tensor = torch.tensor(X_train, dtype=torch.float32, device=device)
+                        y_tensor = torch.tensor(y_train, dtype=torch.float32, device=device)
+                        
+                        # Create dataset and dataloader
+                        train_dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
+                        train_loader = torch.utils.data.DataLoader(
+                            train_dataset, batch_size=64, shuffle=True, pin_memory=False
+                        )
+                        
+                        # Train model directly with GPU data
+                        model.fit_with_dataloader(train_loader, epochs=50, verbose=1)
+                        
+                        # Clean up GPU memory
+                        del X_tensor, y_tensor, train_dataset, train_loader
+                        if device == 'cuda':
+                            torch.cuda.empty_cache()
+                    else:
+                        # Fall back to standard training
+                        model.fit(X_train, y_train, epochs=50, batch_size=64, verbose=1)
+                except RuntimeError as e:
+                    if 'CUDA out of memory' in str(e):
+                        print(f"GPU memory error: {e}")
+                        print("Falling back to CPU training...")
+                        
+                        # Move model to CPU
+                        if hasattr(model, 'model'):
+                            model.model.to('cpu')
+                        
+                        if device == 'cuda':
+                            torch.cuda.empty_cache()
+                        
+                        # Train on CPU
+                        model.fit(X_train, y_train, epochs=25, batch_size=64, verbose=1)
+                    else:
+                        raise e
+                
+                # Free training data memory
                 del X_train, y_train
                 gc.collect()
-                
-                # Update training data
-                X_train = X_sample
-                y_train = y_sample
-                
-                # Free sample arrays
-                del X_sample, y_sample
-                gc.collect()
-            
-            print(f"Training with {len(X_train)} sequences...")
-            
-            # Build model if needed
-            if model.model is None:
-                model.build_model((X_train.shape[1], X_train.shape[2]))
-            
-            # Check if CUDA is available
-            if device == 'cuda' and not torch.cuda.is_available():
-                print("CUDA requested but not available, falling back to CPU.")
-                device = 'cpu'
-            
-            # Move model to device
-            if hasattr(model, 'model'):
-                model.model.to(device)
-            
-            # Try GPU training if possible
-            try:
-                if hasattr(model, 'fit_with_dataloader') and device == 'cuda':
-                    # Move data to GPU in a single operation
-                    X_tensor = torch.tensor(X_train, dtype=torch.float32, device=device)
-                    y_tensor = torch.tensor(y_train, dtype=torch.float32, device=device)
-                    
-                    # Create dataset and dataloader
-                    train_dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
-                    train_loader = torch.utils.data.DataLoader(
-                        train_dataset, batch_size=64, shuffle=True, pin_memory=False
-                    )
-                    
-                    # Train model directly with GPU data
-                    model.fit_with_dataloader(train_loader, epochs=50, verbose=1)
-                    
-                    # Clean up GPU memory
-                    del X_tensor, y_tensor, train_dataset, train_loader
-                    if device == 'cuda':
-                        torch.cuda.empty_cache()
-                else:
-                    # Fall back to standard training
-                    model.fit(X_train, y_train, epochs=50, batch_size=64, verbose=1)
-            except RuntimeError as e:
-                if 'CUDA out of memory' in str(e):
-                    print(f"GPU memory error: {e}")
-                    print("Falling back to CPU training...")
-                    
-                    # Move model to CPU
-                    if hasattr(model, 'model'):
-                        model.model.to('cpu')
-                    
-                    if device == 'cuda':
-                        torch.cuda.empty_cache()
-                    
-                    # Train on CPU
-                    model.fit(X_train, y_train, epochs=25, batch_size=64, verbose=1)
-                else:
-                    raise e
-            
-            # Free training data memory
-            del X_train, y_train
-            gc.collect()
-        
-        return True, model
-
-    def collect_and_prepare_regression_data(self, model, start_day, end_day, is_training=False):
-        """
-        Collect and prepare data for regression models.
-        
-        Args:
-            model: Regression model to be trained (KernelRegression or StockAwareKernelRegression)
-            start_day (int): Start day index
-            end_day (int): End day index
-            is_training (bool): Whether to use training data
-            
-        Returns:
-            tuple: (trained_model_flag, model)
-        """
-        key = 'train_di' if is_training else 'test_di'
-        # Get training days in the specified window
-        train_days = sorted([d for d in np.unique(self.train_test_dict[key]) 
-                           if start_day <= d < end_day])
-        
-        print(f"Preparing regression data from {len(train_days)} days ({start_day} to {end_day})")
-        
-        if len(train_days) == 0:
-            print("No days found in the specified window for regression training.")
-            return False, model
-        
-        # Collect training data
-        all_features = []
-        all_returns = []
-        all_stock_ids = []
-        
-        for train_day in train_days:
-            features, stock_ids, returns = self.prepare_data_for_day(train_day, is_training=is_training)
-            if features is not None and len(features) > 0:
-                all_features.append(features)
-                all_returns.append(returns)
-                all_stock_ids.append(stock_ids)
-        
-        if not all_features:
-            print("No data found for regression training.")
-            return False, model
-        
-        # Concatenate data
-        train_features = np.vstack(all_features)
-        train_returns = np.concatenate(all_returns)
-        train_stock_ids = np.concatenate(all_stock_ids)
-        
-        # Free memory
-        del all_features, all_returns, all_stock_ids
-        gc.collect()
-        
-        # Check for valid data
-        if len(train_features) == 0:
-            print("No valid data found for regression training.")
-            return False, model
-        
-        # Sample if dataset is too large
-        if len(train_features) > 100000:
-            print(f"Sampling {100000} samples from {len(train_features)} for faster training...")
-            sample_indices = np.random.choice(len(train_features), size=100000, replace=False)
-            features_sample = train_features[sample_indices]
-            returns_sample = train_returns[sample_indices]
-            stock_ids_sample = train_stock_ids[sample_indices] if len(train_stock_ids) > 0 else None
-            
-            # Update training data
-            train_features = features_sample
-            train_returns = returns_sample
-            train_stock_ids = stock_ids_sample
-            
-            # Free sample arrays
-            del features_sample, returns_sample, stock_ids_sample
-            gc.collect()
-        
-        # Train the model based on its type
-        print(f"Training regression model with {len(train_features)} samples...")
-        try:
-            # Check if it's a stock-aware model
-            if hasattr(model, 'is_stock_aware') and model.is_stock_aware:
-                model.fit(train_features, train_returns, train_stock_ids)
-            else:
-                # Standard regression model
-                model.fit(train_features, train_returns)
-                
-            # Free memory
-            del train_features, train_returns, train_stock_ids
-            gc.collect()
             
             return True, model
-        except Exception as e:
-            print(f"Error during regression model training: {e}")
-            return False, model
 
     def predict_with_efficient_gpu(self, current_stock_ids, day_idx, features_map, model, window_size, device='cuda'):
         """
@@ -936,7 +880,8 @@ class PyTorchBacktestFramework:
         """
         try:
             # Check if it's a stock-aware model
-            if hasattr(model, 'is_stock_aware') and model.is_stock_aware and stock_ids is not None:
+            if self.model_type == 'stock_kernel':
+                print('here', model, model.predict)
                 return model.predict(features, stock_ids)
             else:
                 return model.predict(features)
@@ -1110,5 +1055,6 @@ class PyTorchBacktestFramework:
                     # Leave this subplot empty
         
         plt.tight_layout()
-        plt.savefig(f'backtest_results_{model_name}.png', dpi=300)
+        plt.savefig(os.path.join(self.output_dir, 
+                    f'backtest_results_{model_name}.png'), dpi=300)
         plt.close(fig)
