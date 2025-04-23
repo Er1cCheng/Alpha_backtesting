@@ -262,20 +262,6 @@ class PyTorchBacktestFramework:
             # train_window_start = max(start_day_idx - 252, )
             # train_window_end = start_day_idx
             
-<<<<<<< HEAD
-            while train_window_end < self.test_date:
-                # Use helper function to collect and prepare training data for transformer
-                model_has_been_trained, model = self.collect_and_prepare_training_data(
-                    model,
-                    self.model_type,
-                    train_window_start, 
-                    train_window_end, 
-                    features_map, 
-                    self.window_size, 
-                    is_training=True,
-                    device=model.device if hasattr(model, 'device') else 'cuda'
-                )
-=======
             # while train_window_end < self.test_date:
 
             model_has_been_trained, model = self.collect_and_prepare_training_data(
@@ -288,7 +274,6 @@ class PyTorchBacktestFramework:
                 is_training=True,
                 device=model.device if hasattr(model, 'device') else 'cuda'
             )
->>>>>>> master
 
                 # if train_window_start % 10 == 0:
                 #     print(f"Trained until {train_window_start} to {train_window_end}")
