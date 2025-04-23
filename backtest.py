@@ -26,7 +26,7 @@ class PyTorchBacktestFramework:
         self.rebalance_freq = rebalance_freq
         self.output_dir = output_dir
         self.model_type = model_type
-        self.stock_count = stock_count if stock_count is not None else np.max(train_test_dict['train_si']) + 1
+        self.stock_count = stock_count if stock_count is not None else max(np.max(train_test_dict['test_si']), np.max(train_test_dict['train_si'])) + 1
         
     def prepare_data_for_day(self, day_idx, is_training=True):
         """
