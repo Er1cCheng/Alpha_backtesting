@@ -59,7 +59,7 @@ class AutoencoderDataset(Dataset):
 
 
 class PyTorchFeatureEngineering:
-    def __init__(self, data_dict, encode, device=None, stock_count = None):
+    def __init__(self, data_dict, encode, device=None, stock_count = None, sector = None, industry = None):
         """
         Initialize the PyTorch FeatureEngineering class with robust NaN handling.
         
@@ -88,6 +88,9 @@ class PyTorchFeatureEngineering:
 
         print(f"From day {self.di.min()} to day {self.di.max()}")
 
+        sector_unique   = np.unique(self.raw_data[:, 9])
+        industry_unique = np.unique(self.raw_data[:, 10])
+
         if stock_count is not None:
             # Boolean index for desired rows
             mask = self.si < stock_count
@@ -99,7 +102,36 @@ class PyTorchFeatureEngineering:
             self.raw_data = self.raw_data[mask]
 
             print(f"Only including the top {stock_count} stocks:")
-            print(f"Shape of x_data: {self.x_data.shape}, Shape of raw_data: {self.raw_data.shape}, Max stock index: {self.si.max()}")
+            print(f"Shape of x_data: {self.x_data.shape}, Max stock index: {self.si.max()}")
+            print(f"From day {self.di.min()} to day {self.di.max()}")
+
+        if sector is not None:
+            idx_sector   = self.list_of_data.index('sector')
+            mask = np.isin(self.raw_data[:, idx_sector], sector)
+            idx  = np.nonzero(mask)[0]
+            self.x_data  = self.x_data[idx]
+            self.y_data  = self.y_data[idx]
+            self.si = self.si[idx]
+            self.di = self.di[idx]
+            self.raw_data = self.raw_data[idx]
+            print(f"Filter stocks based on sectors:")
+            print(f"Including sectors {sector} among all sectors {sector_unique}")
+            print(f"Shape of x_data: {self.x_data.shape}, Max stock index: {self.si.max()}")
+            print(f"From day {self.di.min()} to day {self.di.max()}")
+
+
+        if industry is not None:    
+            idx_industry = self.list_of_data.index('industry')
+            mask = np.isin(self.raw_data[:, idx_industry], industry)
+            idx  = np.nonzero(mask)[0]
+            self.x_data  = self.x_data[idx]
+            self.y_data  = self.y_data[idx]
+            self.si = self.si[idx]
+            self.di = self.di[idx]
+            self.raw_data = self.raw_data[idx]
+            print(f"Filter stocks based on industries:")
+            print(f"Including industries {industry} among all industries {industry_unique}")
+            print(f"Shape of x_data: {self.x_data.shape}, Max stock index: {self.si.max()}")
             print(f"From day {self.di.min()} to day {self.di.max()}")
         
         # Initialize scalers (still use sklearn for preprocessing)
