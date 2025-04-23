@@ -133,6 +133,10 @@ class PyTorchFeatureEngineering:
             print(f"Including industries {industry} among all industries {industry_unique}")
             print(f"Shape of x_data: {self.x_data.shape}, Max stock index: {self.si.max()}")
             print(f"From day {self.di.min()} to day {self.di.max()}")
+
+        if any(v is not None for v in (industry, sector, stock_count)):
+            print(f"All remaining sectors: {np.unique(self.raw_data[:, self.list_of_data.index('sector')])}")
+            print(f"All remaining industries: {np.unique(self.raw_data[:, self.list_of_data.index('industry')])}")
         
         # Initialize scalers (still use sklearn for preprocessing)
         self.alpha_scaler = StandardScaler()
