@@ -24,7 +24,7 @@ class PyTorchBacktestFramework:
         self.window_size = window_size
         self.rebalance_freq = rebalance_freq
         self.model_type = model_type
-        self.stock_count = stock_count if stock_count is not None else len(train_test_dict['unique_stocks'])
+        self.stock_count = stock_count if stock_count is not None else np.max(train_test_dict['train_si']) + 1
         
     def prepare_data_for_day(self, day_idx, is_training=True):
         """
@@ -383,7 +383,7 @@ class PyTorchBacktestFramework:
                 
                 # Create stock ID lookup array for quick vectorized mapping
                 max_stock_id = np.max(unique_current_stocks)
-                stock_row_lookup = np.zeros(self.stock_count + 1, dtype=int) - 1
+                stock_row_lookup = np.zeros(self.stock_count, dtype=int) - 1
                 stock_row_lookup[unique_current_stocks] = np.arange(n_stocks)
                 
                 # Pre-allocate historical returns matrix
