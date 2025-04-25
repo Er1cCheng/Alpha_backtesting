@@ -36,8 +36,8 @@ This project implements a complete quantitative modeling pipeline for portfolio 
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pytorch-quant-portfolio.git
-cd pytorch-quant-portfolio
+git clone https://github.com/Er1cCheng/Alpha_backtesting.git
+cd Alpha_backtesting
 
 # Install dependencies
 pip install -r requirements.txt
