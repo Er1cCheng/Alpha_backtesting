@@ -1,4 +1,5 @@
 import os
+from re import VERBOSE
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 
 import numpy as np
@@ -17,6 +18,30 @@ from nonparametric_regression import KernelRegression, StockAwareKernelRegressio
 from backtest import PyTorchBacktestFramework
 from portfolio_optimizer import PortfolioOptimizer
 from transformer import TimeSeriesTransformer
+
+def save_portfolio_values_to_file(portfolio_values, filename="portfolio_values.txt", directory="."):
+    """
+    Save all values in the portfolio_values list to a single file.
+    
+    Args:
+        portfolio_values: List of portfolio values
+        filename: Name of the file to save values to
+        directory: Directory to save the file in (created if it doesn't exist)
+    """
+    # Create directory if it doesn't exist
+    if not os.path.exists(directory) and directory != ".":
+        os.makedirs(directory)
+        print(f"Created directory: {directory}")
+    
+    # Create the full path
+    filepath = os.path.join(directory, filename)
+    
+    # Save all values to a single file
+    with open(filepath, 'w') as file:
+        for value in portfolio_values:
+            file.write(f"{value}\n")
+    
+    print(f"Successfully saved {len(portfolio_values)} values to {filepath}")
 
 def main():
     """
@@ -47,7 +72,11 @@ def main():
 
     # Feature Engineering Control
     parser.add_argument('--encode', action='store_true', help='Whether to use/train an autoencoder')
-    parser.add_argument('--sector', type=str, default=None, help='Stock filter for the prediction and portfolio')
+    parser.add_argument('--sector', type=int, default=None, help='Stock filter for the prediction and portfolio')
+    parser.add_argument('--industry', type=int, default=None, help='Stock filter for the prediction and portfolio')
+
+    # Optimizer Control
+    parser.add_argument('--optimizer_type', type=str, default=None, help='Directory to save results')
     
     # PyTorch specific arguments
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
@@ -79,14 +108,14 @@ def main():
     
     # Feature engineering with PyTorch
     print("Performing PyTorch feature engineering...")
-    feature_eng = PyTorchFeatureEngineering(data_dict, args.encode, device=args.device, stock_count = args.stock_count)
+    feature_eng = PyTorchFeatureEngineering(data_dict, args.encode, device=args.device, stock_count=args.stock_count, sector=args.sector, industry=args.industry)
     train_test_dict = feature_eng.generate_features(output_dir=args.output_dir)
     
     # Initialize model based on model_type
-    print(f"Initializing {args.model_type} model...")
+    print(f"\nInitializing {args.model_type} model...")
     
     if args.model_type == 'kernel':
-        model = KernelRegression(bandwidth='auto')
+        model = KernelRegression(bandwidth='auto', verbose=1)
     elif args.model_type == 'stock_kernel':
         model = StockAwareKernelRegression(bandwidth='auto')
     else:  # transformer
@@ -101,7 +130,8 @@ def main():
         )
     
     # Initialize portfolio optimizer
-    optimizer = PortfolioOptimizer(risk_aversion=args.risk_aversion, max_weight=args.max_weight)
+    optimizer = PortfolioOptimizer(risk_aversion=args.risk_aversion,\
+                                   max_weight=args.max_weight, gpu_library=args.optimizer_type)
     
     # Initialize backtest framework - use PyTorch version
     backtest = PyTorchBacktestFramework(
@@ -145,6 +175,7 @@ def main():
     else:
         print(f"No pre-trained model found. Will train {args.model_type} model during backtest.")
         disable_retraining = False
+    model.verbose = 0
 
     # Run backtest
     print(f"Running backtest for {args.model_type} model from day {start_day_idx} to {end_day_idx}...")
@@ -215,6 +246,8 @@ def main():
         metrics_history,
         model_id
     )
+
+    save_portfolio_values_to_file(portfolio_values)
     
     # Print final performance
     total_return = portfolio_values[-1] / portfolio_values[0] - 1

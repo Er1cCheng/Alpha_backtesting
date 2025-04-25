@@ -6,6 +6,42 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
+
+import torch
+import torch.nn as nn
+
+class DirectionalMSELoss(nn.Module):
+    def __init__(self, directional_penalty=1.0):
+        """
+        Custom loss function that combines MSE with directional penalty.
+        
+        Args:
+            directional_penalty (float): Weight of the directional penalty term
+        """
+        super(DirectionalMSELoss, self).__init__()
+        self.mse = nn.L1Loss()
+        self.directional_penalty = directional_penalty
+        
+    def forward(self, predictions, targets):
+        # Standard MSE loss
+        mse_loss = self.mse(predictions, targets)
+        
+        # Directional penalty: apply when prediction < 0 and target > 0
+        directional_loss = torch.relu(-(predictions * targets)).sum()
+        
+        # Calculate the directional penalty (could be modified for different penalties)
+        # if torch.any(directional_mask):
+        #     directional_loss = torch.mean(
+        #         torch.abs(predictions[directional_mask]) + torch.abs(targets[directional_mask])
+        #     )
+        # else:
+        #     directional_loss = torch.tensor(0.0, device=predictions.device)
+        
+        # Combine the losses
+        total_loss = mse_loss + self.directional_penalty * directional_loss
+        
+        return total_loss
+
 # TimeSeriesDataset for PyTorch
 class TimeSeriesDataset(Dataset):
     def __init__(self, features, targets):
@@ -146,7 +182,7 @@ class PyTorchTimeSeriesTransformer(nn.Module):
         
         # Global average pooling
         x = x.transpose(1, 2)  # Change to (batch_size, d_model, seq_length)
-        x = self.global_avg_pooling(x)  # Shape: (batch_size, d_model, 1)
+        x = x[:, :, -1]  # Shape: (batch_size, d_model, 1)
         x = x.squeeze(-1)  # Shape: (batch_size, d_model)
         
         # Output layer
@@ -184,6 +220,8 @@ class TimeSeriesTransformer:
         Build the transformer model for time series prediction.
         """
         feature_dim = input_shape[1]
+
+        print("Building, input shape: ", input_shape)
         
         # Create PyTorch model
         self.model = PyTorchTimeSeriesTransformer(
@@ -199,7 +237,7 @@ class TimeSeriesTransformer:
         
         # Define optimizer and loss function
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4)
-        self.criterion = nn.MSELoss()
+        self.criterion = DirectionalMSELoss(directional_penalty=100)
         
         return self.model
     

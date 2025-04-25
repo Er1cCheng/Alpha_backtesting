@@ -59,7 +59,7 @@ class AutoencoderDataset(Dataset):
 
 
 class PyTorchFeatureEngineering:
-    def __init__(self, data_dict, encode, device=None, stock_count = None):
+    def __init__(self, data_dict, encode, device=None, stock_count = None, sector=None, industry=None):
         """
         Initialize the PyTorch FeatureEngineering class with robust NaN handling.
         
@@ -107,6 +107,8 @@ class PyTorchFeatureEngineering:
         self.raw_data_scaler = StandardScaler()
         
         # Initialize encoders
+        self.sector = sector
+        self.industry = industry
         self.sector_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
         self.industry_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
         
@@ -204,6 +206,70 @@ class PyTorchFeatureEngineering:
         for i, feature_name in enumerate(self.list_of_data):
             train_test_dict[f'train_{feature_name}'] = imputed_raw_data[train_indices, i]
             train_test_dict[f'test_{feature_name}'] = imputed_raw_data[test_indices, i]
+
+        if self.sector is not None:
+            # Get indices where train_sector and test_sector equal a specific value
+            sector_value = self.sector  # Your target sector value
+
+            # Filter training data
+            train_sector_mask = train_test_dict['train_sector'].astype(np.int32) == sector_value
+            train_sector_indices = np.where(train_sector_mask)[0]
+
+            # Filter testing data
+            test_sector_mask = train_test_dict['test_sector'] == sector_value
+            test_sector_indices = np.where(test_sector_mask)[0]
+
+            # Create a new dictionary with filtered data
+            filtered_train_test_dict = {
+                'train_x': train_test_dict['train_x'][train_sector_indices],
+                'train_y': train_test_dict['train_y'][train_sector_indices],
+                'train_si': train_test_dict['train_si'][train_sector_indices],
+                'train_di': train_test_dict['train_di'][train_sector_indices],
+                'test_x': train_test_dict['test_x'][test_sector_indices],
+                'test_y': train_test_dict['test_y'][test_sector_indices],
+                'test_si': train_test_dict['test_si'][test_sector_indices],
+                'test_di': train_test_dict['test_di'][test_sector_indices]
+            }
+
+            # Filter feature data as well
+            for i, feature_name in enumerate(self.list_of_data):
+                filtered_train_test_dict[f'train_{feature_name}'] = train_test_dict[f'train_{feature_name}'][train_sector_indices]
+                filtered_train_test_dict[f'test_{feature_name}'] = train_test_dict[f'test_{feature_name}'][test_sector_indices]
+            
+            train_test_dict = filtered_train_test_dict
+            del filtered_train_test_dict
+
+        if self.industry is not None:
+            # Get indices where train_sector and test_sector equal a specific value
+            industry_value = self.industry  # Your target sector value
+
+            # Filter training data
+            train_industry_mask = train_test_dict['train_industry'] == industry_value
+            train_industry_indices = np.where(train_industry_mask)[0]
+
+            # Filter testing data
+            test_industry_mask = train_test_dict['test_industry'] == industry_value
+            test_industry_indices = np.where(test_industry_mask)[0]
+
+            # Create a new dictionary with filtered data
+            filtered_train_test_dict = {
+                'train_x': train_test_dict['train_x'][train_industry_indices],
+                'train_y': train_test_dict['train_y'][train_industry_indices],
+                'train_si': train_test_dict['train_si'][train_industry_indices],
+                'train_di': train_test_dict['train_di'][train_industry_indices],
+                'test_x': train_test_dict['test_x'][test_industry_indices],
+                'test_y': train_test_dict['test_y'][test_industry_indices],
+                'test_si': train_test_dict['test_si'][test_industry_indices],
+                'test_di': train_test_dict['test_di'][test_industry_indices]
+            }
+
+            # Filter feature data as well
+            for i, feature_name in enumerate(self.list_of_data):
+                filtered_train_test_dict[f'train_{feature_name}'] = train_test_dict[f'train_{feature_name}'][train_industry_indices]
+                filtered_train_test_dict[f'test_{feature_name}'] = train_test_dict[f'test_{feature_name}'][test_industry_indices]
+            
+            train_test_dict = filtered_train_test_dict
+            del filtered_train_test_dict
             
         # Check and report any remaining NaNs in the target variable
         train_y_nan = np.isnan(train_test_dict['train_y']).sum()
@@ -778,7 +844,7 @@ class PyTorchFeatureEngineering:
         print("\nCombining all features...")
         train_features = np.hstack((
             train_test_dict['train_x'],      # Original alpha signals
-            train_embeddings,                # Alpha embeddings
+            # train_embeddings,                # Alpha embeddings
             train_tech_indicators,           # Technical indicators
             train_encoded_sector,            # Encoded sector
             train_encoded_industry,          # Encoded industry
@@ -788,7 +854,7 @@ class PyTorchFeatureEngineering:
         
         test_features = np.hstack((
             train_test_dict['test_x'],
-            test_embeddings,
+            # test_embeddings,
             test_tech_indicators,
             test_encoded_sector,
             test_encoded_industry,

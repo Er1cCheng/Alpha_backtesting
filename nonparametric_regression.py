@@ -9,7 +9,7 @@ from scipy.spatial.distance import cdist
 from joblib import Parallel, delayed
 
 class KernelRegression:
-    def __init__(self, bandwidth='auto', kernel='gaussian', n_neighbors=100, n_jobs=-1):
+    def __init__(self, bandwidth='auto', kernel='gaussian', n_neighbors=100, n_jobs=-1, verbose=1):
         """
         Initialize the Kernel Regression model with NaN handling and performance optimizations.
         
@@ -32,14 +32,14 @@ class KernelRegression:
         self._is_fitted = False
         self.feature_names = None
         self.n_features = None
+        self.verbose = 0
     
     def _optimize_bandwidth(self, X_train, y_train):
         """
         Find the optimal bandwidth using cross-validation.
         Uses a more efficient approach with KNeighborsRegressor.
         """
-        print("Optimizing bandwidth using cross-validation...")
-        
+
         # Define the parameter grid
         param_grid = {'n_neighbors': [5, 10, 20, 50, 100]}
         
@@ -54,34 +54,60 @@ class KernelRegression:
                 indices = np.random.choice(X_train.shape[0], sample_size, replace=False)
                 X_sample = X_train[indices]
                 y_sample = y_train[indices]
-                print(f"Using {sample_size} samples for bandwidth optimization")
             else:
                 X_sample = X_train
                 y_sample = y_train
             
-            grid_search = GridSearchCV(
-                KNeighborsRegressor(),
-                param_grid=param_grid,
-                cv=tscv,
-                scoring='neg_mean_squared_error',
-                n_jobs=self.n_jobs,
-                verbose=1
-            )
+            # Manual implementation to handle errors for individual parameter values
+            from sklearn.model_selection import KFold
             
-            grid_search.fit(X_sample, y_sample)
-            best_n_neighbors = grid_search.best_params_['n_neighbors']
-            print(f"Best n_neighbors: {best_n_neighbors}")
+            best_score = float('-inf')
+            best_n_neighbors = 50  # Default value
+            
+            # Parameter values to test
+            n_neighbors_values = param_grid['n_neighbors']
+            
+            for n_neighbors in n_neighbors_values:
+                try:
+                    # Create model with current n_neighbors
+                    model = KNeighborsRegressor(n_neighbors=n_neighbors)
+                    
+                    # Perform cross-validation
+                    scores = []
+                    for train_idx, test_idx in tscv.split(X_sample):
+                        X_train_cv, X_test_cv = X_sample[train_idx], X_sample[test_idx]
+                        y_train_cv, y_test_cv = y_sample[train_idx], y_sample[test_idx]
+                        
+                        # Fit and evaluate model
+                        model.fit(X_train_cv, y_train_cv)
+                        pred = model.predict(X_test_cv)
+                        mse = mean_squared_error(y_test_cv, pred)
+                        scores.append(-mse)  # Negative MSE as we're maximizing
+                    
+                    # Calculate mean score across folds
+                    mean_score = np.mean(scores)
+                    
+                    # Update best parameters if current is better
+                    if mean_score > best_score:
+                        best_score = mean_score
+                        best_n_neighbors = n_neighbors
+                        
+                except Exception as e:
+                    continue
+            
+            if self.verbose:
+                print(f"Best n_neighbors: {best_n_neighbors}")
+                    
         except Exception as e:
-            print(f"Error in grid search: {e}")
-            print("Using default n_neighbors=50")
+            if self.verbose:
+                print(f"Error in grid search: {e}")
+                print("Using default n_neighbors=50")
             best_n_neighbors = 50
         
-        # Rule of thumb: bandwidth is approximately proportional to n_neighbors^(1/5)
-        # for a dataset size of n
         n = X_train.shape[0]
         best_bandwidth = best_n_neighbors * (n ** (-1/5))
         
-        print(f"Selected bandwidth: {best_bandwidth:.6f}")
+        # print(f"Selected bandwidth: {best_bandwidth:.6f}")
         return best_bandwidth
     
     def fit(self, X_train, y_train, feature_names=None):
@@ -94,12 +120,12 @@ class KernelRegression:
             y_train: Training targets
             feature_names: Optional list of feature names (helps with dimension consistency)
         """
-        print(f"Fitting KernelRegression model...")
+        if self.verbose:
+            print(f"Fitting KernelRegression model...")
         start_time = np.datetime64('now')
         
         # Store feature dimensionality
         self.n_features = X_train.shape[1]
-        print(f"Training with {self.n_features} features")
         
         # Store feature names if provided
         if feature_names is not None:
@@ -109,10 +135,6 @@ class KernelRegression:
         # Ensure inputs are numpy arrays
         X_train = np.asarray(X_train)
         y_train = np.asarray(y_train)
-        
-        # Handle NaN values in features and targets
-        print(f"Input shapes before imputation - X: {X_train.shape}, y: {y_train.shape}")
-        print(f"NaN counts - X: {np.isnan(X_train).sum()}, y: {np.isnan(y_train).sum()}")
         
         # First handle NaN in target variable as we might need to drop rows
         y_nan_mask = np.isnan(y_train)
@@ -129,7 +151,8 @@ class KernelRegression:
         X_scaled = self.X_scaler.fit_transform(X_train)
         y_scaled = self.y_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
         
-        print(f"Shapes after imputation and scaling - X: {X_scaled.shape}, y: {y_scaled.shape}")
+        if self.verbose:
+            print(f"Shapes after imputation and scaling - X: {X_scaled.shape}, y: {y_scaled.shape}")
         
         # Optimize bandwidth if 'auto'
         if self.bandwidth == 'auto':
@@ -152,7 +175,9 @@ class KernelRegression:
         self._is_fitted = True
         end_time = np.datetime64('now')
         elapsed = (end_time - start_time) / np.timedelta64(1, 's')
-        print(f"KernelRegression training completed in {elapsed:.2f} seconds")
+
+        if self.verbose:
+            print(f"KernelRegression training completed in {elapsed:.2f} seconds")
         return self
     
     def _ensure_feature_consistency(self, X):
@@ -183,27 +208,36 @@ class KernelRegression:
         return X
     
     def _process_batch(self, X_batch, indices, distances):
-        """Process a batch of predictions in parallel"""
-        predictions = np.zeros(X_batch.shape[0])
+        """Process a batch of predictions in parallel using vectorized operations"""
+        batch_size = X_batch.shape[0]
         
-        for i in range(X_batch.shape[0]):
-            # Get the neighbors and distances for this point
-            neighbor_indices = indices[i]
-            neighbor_distances = distances[i]
+        # Compute kernel weights (vectorized)
+        weights = np.exp(-distances / (2 * (self.best_bandwidth ** 2)))
+        
+        # Calculate sum of weights for each sample
+        sum_weights = np.sum(weights, axis=1)
+        
+        # Create mask for samples with positive sum of weights
+        positive_mask = sum_weights > 0
+        
+        # Initialize predictions array
+        predictions = np.zeros(batch_size)
+        
+        # For samples with positive weights, compute normalized weighted average
+        if np.any(positive_mask):
+            # Normalize weights where sum is positive
+            normalized_weights = weights[positive_mask] / sum_weights[positive_mask, np.newaxis]
             
-            # Compute kernel weights
-            weights = np.exp(-neighbor_distances / (2 * (self.best_bandwidth ** 2)))
+            # Get target values for neighbors of each sample
+            neighbor_targets = np.array([self.y_train_scaled[idx] for idx in indices])
             
-            # Normalize weights
-            sum_weights = np.sum(weights)
-            if sum_weights > 0:
-                weights = weights / sum_weights
-                # Compute weighted average of target values
-                predictions[i] = np.sum(weights * self.y_train_scaled[neighbor_indices])
-            else:
-                # Fallback to mean if all weights are zero
-                predictions[i] = np.mean(self.y_train_scaled)
-                
+            # Compute weighted average
+            predictions[positive_mask] = np.sum(normalized_weights * neighbor_targets[positive_mask], axis=1)
+        
+        # For samples with zero weights, use the mean
+        if not np.all(positive_mask):
+            predictions[~positive_mask] = np.mean(self.y_train_scaled)
+        
         return predictions
     
     def predict(self, X, batch_size=1000):
@@ -215,7 +249,8 @@ class KernelRegression:
         if not self._is_fitted:
             raise ValueError("Model has not been fitted yet. Call fit() first.")
         
-        print(f"Predicting with KernelRegression...")
+        if self.verbose:
+            print(f"Predicting with KernelRegression...")
         start_time = np.datetime64('now')
         
         # Ensure inputs are numpy arrays
@@ -287,7 +322,8 @@ class KernelRegression:
         
         end_time = np.datetime64('now')
         elapsed = (end_time - start_time) / np.timedelta64(1, 's')
-        print(f"KernelRegression prediction completed in {elapsed:.2f} seconds for {n_samples} samples")
+        if self.verbose:
+            print(f"KernelRegression prediction completed in {elapsed:.2f} seconds for {n_samples} samples")
         
         return y_pred
     
@@ -353,7 +389,6 @@ class StockAwareKernelRegression:
         
         # Store feature dimensionality
         self.n_features = X_train.shape[1]
-        print(f"Training with {self.n_features} features")
         
         # Convert to numpy arrays if not already
         X_train = np.asarray(X_train)
@@ -378,7 +413,8 @@ class StockAwareKernelRegression:
             bandwidth=self.bandwidth, 
             kernel=self.kernel,
             n_neighbors=self.n_neighbors,
-            n_jobs=self.n_jobs
+            n_jobs=self.n_jobs,
+            verbose=0
         )
         self.global_model.fit(X_train, y_train, feature_names)
         
@@ -394,7 +430,8 @@ class StockAwareKernelRegression:
                 bandwidth=self.bandwidth, 
                 kernel=self.kernel,
                 n_neighbors=min(self.n_neighbors, len(stock_X)),
-                n_jobs=1  # Use 1 job since we're already parallelizing at the stock level
+                n_jobs=1,
+                verbose=0
             )
             try:
                 model.fit(stock_X, stock_y, feature_names)
@@ -403,6 +440,8 @@ class StockAwareKernelRegression:
                 print(f"Error fitting model for stock {stock_id}: {e}")
                 return stock_id, None, len(stock_X)
         
+        print("Fitting per stock model ...")
+
         # Use joblib for parallel processing if n_jobs > 1
         if self.n_jobs != 1:
             results = Parallel(n_jobs=self.n_jobs)(
@@ -480,203 +519,6 @@ class StockAwareKernelRegression:
         
         # Process each stock with a specific model
         unique_pred_stocks = np.unique(stock_ids)
-        print('pre', unique_pred_stocks, self.stock_models.keys())
-        for stock_id in unique_pred_stocks:
-            print(stock_id, self.stock_models.keys())
-            if stock_id in self.stock_models:
-                # Get indices for this stock
-                idx = stock_ids == stock_id
-                print(np.sum(idx))
-                if np.sum(idx) > 0:
-                    # Use the stock-specific model to predict
-                    y_pred[idx] = self.stock_models[stock_id].predict(X[idx])
-                    has_prediction[idx] = True
-        
-        # For stocks without a specific model, use the global model
-        missing_idx = ~has_prediction
-        if np.sum(missing_idx) > 0:
-            y_pred[missing_idx] = self.global_model.predict(X[missing_idx])
-            print(f"Used global model for {np.sum(missing_idx)} samples without stock-specific models")
-        
-        end_time = np.datetime64('now')
-        elapsed = (end_time - start_time) / np.timedelta64(1, 's')
-        print(f"StockAwareKernelRegression prediction completed in {elapsed:.2f} seconds for {len(stock_ids)} samples")
-        
-        return y_pred
-    
-    def evaluate(self, X, y_true, stock_ids):
-        """
-        Evaluate the model performance.
-        """
-        if not self._is_fitted:
-            raise ValueError("Model has not been fitted yet. Call fit() first.")
-            
-        # Make predictions
-        y_pred = self.predict(X, stock_ids)
-        
-        # Filter out NaN values in y_true for evaluation
-        mask = ~np.isnan(y_true)
-        y_true_filtered = y_true[mask]
-        y_pred_filtered = y_pred[mask]
-        stock_ids_filtered = stock_ids[mask]
-        
-        # Calculate metrics
-        mse = mean_squared_error(y_true_filtered, y_pred_filtered)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_true_filtered, y_pred_filtered)
-        r2 = r2_score(y_true_filtered, y_pred_filtered)
-        
-        # Calculate information coefficient (correlation)
-        ic = np.corrcoef(y_true_filtered, y_pred_filtered)[0, 1]
-        
-        # Calculate directional accuracy
-        correct_direction = np.sum((y_true_filtered > 0) == (y_pred_filtered > 0)) / len(y_true_filtered)
-        
-        # Calculate metrics by stock
-        stock_metrics = {}
-        for stock_id in np.unique(stock_ids_filtered):
-            idx = stock_ids_filtered == stock_id
-            if np.sum(idx) > 0:
-                stock_mse = mean_squared_error(y_true_filtered[idx], y_pred_filtered[idx])
-                stock_rmse = np.sqrt(stock_mse)
-                stock_metrics[stock_id] = {
-                    'mse': stock_mse,
-                    'rmse': stock_rmse,
-                    'count': np.sum(idx)
-                }
-        
-        return {
-            'mse': mse,
-            'rmse': rmse,
-            'mae': mae,
-            'r2': r2,
-            'ic': ic,
-            'directional_accuracy': correct_direction,
-            'stock_metrics': stock_metrics
-        }
-
-
-class StockAwareKernelRegression:
-    def __init__(self, bandwidth='auto', kernel='gaussian', n_neighbors=100, n_jobs=-1):
-        """
-        Initialize the Stock-Aware Kernel Regression model with optimizations.
-        This model applies kernel regression separately for each stock.
-        """
-        self.bandwidth = bandwidth
-        self.kernel = kernel
-        self.n_neighbors = n_neighbors
-        self.n_jobs = n_jobs
-        self.stock_models = {}
-        self._is_fitted = False
-        self.global_model = None  # Fallback model for stocks without enough data
-    
-    def fit(self, X_train, y_train, stock_ids):
-        """
-        Fit separate kernel regression models for each stock with NaN handling.
-        Uses optimized implementation for speed.
-        """
-        print(f"Fitting StockAwareKernelRegression model...")
-        start_time = np.datetime64('now')
-        
-        # Convert to numpy arrays if not already
-        X_train = np.asarray(X_train)
-        y_train = np.asarray(y_train)
-        stock_ids = np.asarray(stock_ids)
-        
-        # Filter out rows with NaN in y_train
-        y_nan_mask = np.isnan(y_train)
-        if np.any(y_nan_mask):
-            X_train = X_train[~y_nan_mask]
-            stock_ids = stock_ids[~y_nan_mask]
-            y_train = y_train[~y_nan_mask]
-            print(f"Dropped {np.sum(y_nan_mask)} rows with NaN targets")
-        
-        # Get unique stock IDs
-        unique_stocks = np.unique(stock_ids)
-        print(f"Fitting models for {len(unique_stocks)} unique stocks")
-        
-        # First, fit a global model as fallback
-        print("Fitting global model as fallback...")
-        self.global_model = KernelRegression(
-            bandwidth=self.bandwidth, 
-            kernel=self.kernel,
-            n_neighbors=self.n_neighbors,
-            n_jobs=self.n_jobs
-        )
-        self.global_model.fit(X_train, y_train)
-        
-        # Use parallel processing to fit stock-specific models
-        def fit_stock_model(stock_id):
-            # Get indices for this stock
-            idx = stock_ids == stock_id
-            stock_X = X_train[idx]
-            stock_y = y_train[idx]
-            
-            # Check if we have enough data points
-            if len(stock_X) >= 100:  # Require at least 100 data points
-                # Create and fit a kernel regression model
-                model = KernelRegression(
-                    bandwidth=self.bandwidth, 
-                    kernel=self.kernel,
-                    n_neighbors=min(self.n_neighbors, len(stock_X)),
-                    n_jobs=1  # Use 1 job since we're already parallelizing at the stock level
-                )
-                try:
-                    model.fit(stock_X, stock_y)
-                    return stock_id, model, len(stock_X)
-                except Exception as e:
-                    print(f"Error fitting model for stock {stock_id}: {e}")
-                    return stock_id, None, len(stock_X)
-            else:
-                return stock_id, None, len(stock_X)
-        
-        # Use joblib for parallel processing if n_jobs > 1
-        if self.n_jobs != 1:
-            results = Parallel(n_jobs=self.n_jobs)(
-                delayed(fit_stock_model)(stock_id) for stock_id in unique_stocks
-            )
-        else:
-            results = [fit_stock_model(stock_id) for stock_id in unique_stocks]
-        
-        # Process results
-        success_count = 0
-        for stock_id, model, data_count in results:
-            if model is not None:
-                self.stock_models[stock_id] = model
-                success_count += 1
-        
-        print(f"Successfully fitted models for {success_count} out of {len(unique_stocks)} stocks")
-        self._is_fitted = True
-        
-        end_time = np.datetime64('now')
-        elapsed = (end_time - start_time) / np.timedelta64(1, 's')
-        print(f"StockAwareKernelRegression training completed in {elapsed:.2f} seconds")
-        return self
-    
-    def predict(self, X, stock_ids):
-        """
-        Make predictions using the stock-specific kernel regression models.
-        Uses the global model as fallback.
-        """
-        print('predict')
-        if not self._is_fitted:
-            raise ValueError("Model has not been fitted yet. Call fit() first.")
-        
-        print(f"Predicting with StockAwareKernelRegression...")
-        start_time = np.datetime64('now')
-            
-        # Convert to numpy arrays if not already
-        X = np.asarray(X)
-        stock_ids = np.asarray(stock_ids)
-        
-        # Initialize predictions
-        y_pred = np.zeros(X.shape[0])
-        
-        # Track which samples have predictions
-        has_prediction = np.zeros(len(stock_ids), dtype=bool)
-        
-        # Process each stock with a specific model
-        unique_pred_stocks = np.unique(stock_ids)
         for stock_id in unique_pred_stocks:
             if stock_id in self.stock_models:
                 # Get indices for this stock
@@ -732,141 +574,6 @@ class StockAwareKernelRegression:
             idx = stock_ids_filtered == stock_id
             if np.sum(idx) > 0:
                 stock_mse = mean_squared_error(y_true_filtered[idx], y_pred_filtered[idx])
-                stock_rmse = np.sqrt(stock_mse)
-                stock_metrics[stock_id] = {
-                    'mse': stock_mse,
-                    'rmse': stock_rmse,
-                    'count': np.sum(idx)
-                }
-        
-        return {
-            'mse': mse,
-            'rmse': rmse,
-            'mae': mae,
-            'r2': r2,
-            'ic': ic,
-            'directional_accuracy': correct_direction,
-            'stock_metrics': stock_metrics
-        }
-
-
-class StockAwareKernelRegression:
-    def __init__(self, bandwidth='auto', kernel='gaussian'):
-        """
-        Initialize the Stock-Aware Kernel Regression model.
-        This model applies kernel regression separately for each stock.
-        
-        Args:
-            bandwidth (str or float): Bandwidth for the kernel. If 'auto', it will be selected using cross-validation.
-            kernel (str): Kernel type ('gaussian', 'epanechnikov', etc.)
-        """
-        self.bandwidth = bandwidth
-        self.kernel = kernel
-        self.stock_models = {}
-        self._is_fitted = False
-    
-    def fit(self, X_train, y_train, stock_ids):
-        """
-        Fit separate kernel regression models for each stock.
-        
-        Args:
-            X_train (ndarray): Training features
-            y_train (ndarray): Training targets
-            stock_ids (ndarray): Stock IDs for each sample
-            
-        Returns:
-            self: The fitted model
-        """
-        # Get unique stock IDs
-        unique_stocks = np.unique(stock_ids)
-        
-        # Fit a separate model for each stock
-        for stock_id in unique_stocks:
-            # Get indices for this stock
-            idx = stock_ids == stock_id
-            
-            if np.sum(idx) > 20:  # Only fit if we have enough data points
-                # Create and fit a kernel regression model
-                model = KernelRegression(bandwidth=self.bandwidth, kernel=self.kernel)
-                model.fit(X_train[idx], y_train[idx])
-                
-                # Store the model
-                self.stock_models[stock_id] = model
-        
-        self._is_fitted = True
-        return self
-    
-    def predict(self, X, stock_ids):
-        """
-        Make predictions using the stock-specific kernel regression models.
-        
-        Args:
-            X (ndarray): Input features
-            stock_ids (ndarray): Stock IDs for each sample
-            
-        Returns:
-            ndarray: Predicted values
-        """
-        if not self._is_fitted:
-            raise ValueError("Model has not been fitted yet. Call fit() first.")
-            
-        # Initialize predictions
-        y_pred = np.zeros(X.shape[0])
-        
-        # Make predictions for each stock
-        for stock_id in self.stock_models:
-            # Get indices for this stock
-            idx = stock_ids == stock_id
-            
-            if np.sum(idx) > 0:
-                # Use the stock-specific model to predict
-                y_pred[idx] = self.stock_models[stock_id].predict(X[idx])
-        
-        # For stocks without a model, use the average prediction
-        missing_idx = ~np.isin(stock_ids, list(self.stock_models.keys()))
-        if np.sum(missing_idx) > 0:
-            # Use the average of available predictions
-            average_pred = np.mean(y_pred[~missing_idx]) if np.sum(~missing_idx) > 0 else 0
-            y_pred[missing_idx] = average_pred
-        
-        return y_pred
-    
-    def evaluate(self, X, y_true, stock_ids):
-        """
-        Evaluate the model performance.
-        
-        Args:
-            X (ndarray): Input features
-            y_true (ndarray): True target values
-            stock_ids (ndarray): Stock IDs for each sample
-            
-        Returns:
-            dict: Dictionary of evaluation metrics
-        """
-        if not self._is_fitted:
-            raise ValueError("Model has not been fitted yet. Call fit() first.")
-            
-        # Make predictions
-        y_pred = self.predict(X, stock_ids)
-        
-        # Calculate metrics
-        mse = mean_squared_error(y_true, y_pred)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_true, y_pred)
-        r2 = r2_score(y_true, y_pred)
-        
-        # Calculate information coefficient (correlation)
-        ic = np.corrcoef(y_true, y_pred)[0, 1]
-        
-        # Calculate directional accuracy
-        correct_direction = np.sum((y_true > 0) == (y_pred > 0)) / len(y_true)
-        
-        # Calculate metrics by stock
-        stock_metrics = {}
-        for stock_id in np.unique(stock_ids):
-            idx = stock_ids == stock_id
-            if np.sum(idx) > 0:
-                stock_mse = mean_squared_error(y_true[idx], y_pred[idx])
                 stock_rmse = np.sqrt(stock_mse)
                 stock_metrics[stock_id] = {
                     'mse': stock_mse,

@@ -11,7 +11,7 @@ import gc
 import os
 
 class PyTorchBacktestFramework:
-    def __init__(self, train_test_dict, model_type, output_dir, window_size=20, rebalance_freq=5, stock_count = None):
+    def __init__(self, train_test_dict, model_type, output_dir, window_size=20, rebalance_freq=5, stock_count=100):
         """
         Initialize the PyTorch-specific backtest framework.
         
@@ -26,7 +26,9 @@ class PyTorchBacktestFramework:
         self.rebalance_freq = rebalance_freq
         self.output_dir = output_dir
         self.model_type = model_type
-        self.stock_count = stock_count if stock_count is not None else max(np.max(train_test_dict['test_si']), np.max(train_test_dict['train_si'])) + 1
+        self.stock_count = stock_count
+
+        self.max_stock_id = max(train_test_dict['train_si'].max(), train_test_dict['test_si'].max())
         
     def prepare_data_for_day(self, day_idx, is_training=True):
         """
@@ -162,7 +164,7 @@ class PyTorchBacktestFramework:
 
         # Initialize and train model before starting backtest if not disabled
         if not disable_retraining:
-            print("Performing initial model training...")
+            print("--- Performing initial model training... ---")
             
             # Add timing for initial training
             initial_training_start = time.time()
@@ -170,10 +172,6 @@ class PyTorchBacktestFramework:
             # Define training window
             train_window_start = np.min(self.train_test_dict['train_di'])
             train_window_end = train_window_start + self.window_size
-            # train_window_start = max(start_day_idx - 252, )
-            # train_window_end = start_day_idx
-            
-            # while train_window_end < self.test_date:
 
             model_has_been_trained, model = self.collect_and_prepare_training_data(
                 model, 
@@ -183,14 +181,9 @@ class PyTorchBacktestFramework:
                 features_map, 
                 self.window_size, 
                 is_training=True,
-                device=model.device if hasattr(model, 'device') else 'cuda'
+                device=model.device if hasattr(model, 'device') else 'cuda',
+                epoch=50
             )
-
-                # if train_window_start % 10 == 0:
-                #     print(f"Trained until {train_window_start} to {train_window_end}")
-
-                # train_window_start += 1
-                # train_window_end += 1
             
             # Calculate initial training time
             initial_training_time = time.time() - initial_training_start
@@ -201,7 +194,7 @@ class PyTorchBacktestFramework:
 
         # Run the backtest
         for i, day_idx in enumerate(test_days):
-            print(f"\n---- Backtesting day {i+1}/{len(test_days)} (Day index: {day_idx}) ----")
+            print(f"\n---- Backtesting day {i+1}/{len(test_days)} (Day index: {day_idx}, Portfolio ${portfolio_values[-1]}) ----")
             
             # Check if we need to retrain the model
             if not disable_retraining and day_idx - last_retrain_day >= retrain_freq:
@@ -225,11 +218,6 @@ class PyTorchBacktestFramework:
                     is_training=False,
                     device=model.device if hasattr(model, 'device') else 'cuda'
                 )
-
-                    # if train_window_start % 10 == 0:
-                    #     print(f"Trained until {train_window_start} to {train_window_end}")
-                    
-                    # train_window_start += 1
                 
                 # Calculate retraining time
                 retrain_time = time.time() - retrain_start
@@ -317,10 +305,11 @@ class PyTorchBacktestFramework:
                 unique_current_stocks = np.unique(current_stock_ids)
                 n_stocks = len(unique_current_stocks)
                 max_history_length = 60
+
+                max_stock_id = self.max_stock_id
                 
                 # Create stock ID lookup array for quick vectorized mapping
-                max_stock_id = np.max(unique_current_stocks)
-                stock_row_lookup = np.zeros(self.stock_count, dtype=int) - 1
+                stock_row_lookup = np.zeros(self.max_stock_id + 1, dtype=int) - 1
                 stock_row_lookup[unique_current_stocks] = np.arange(n_stocks)
                 
                 # Pre-allocate historical returns matrix
@@ -331,10 +320,13 @@ class PyTorchBacktestFramework:
                 for col_idx, hist_day in enumerate(range(day_idx - 60, day_idx)):
                     if hist_day in stock_data_by_day:
                         hist_stock_ids, hist_returns = stock_data_by_day[hist_day][1:3]
+
                         
                         # Find stocks in our universe
-                        valid_indices = np.where((hist_stock_ids <= max_stock_id) & 
-                                              (stock_row_lookup[hist_stock_ids] >= 0))[0]
+                        valid_indices1 = np.where(hist_stock_ids <= min(self.max_stock_id, len(stock_row_lookup)))[0]
+                        valid_indices2 = np.where(stock_row_lookup[hist_stock_ids] >= 0)[0]
+
+                        valid_indices = np.intersect1d(valid_indices1, valid_indices2)
                         
                         if len(valid_indices) > 0:
                             # Extract valid returns and indices
@@ -377,6 +369,8 @@ class PyTorchBacktestFramework:
                 
                 # Get returns in right order
                 current_expected_returns = prediction_lookup[unique_current_stocks]
+                current_expected_returns += 1
+                print("Return", current_expected_returns.sum(), (current_expected_returns < 0).sum())
                 
                 # Free memory
                 del prediction_lookup, counts, sums, mask
@@ -393,6 +387,7 @@ class PyTorchBacktestFramework:
                 # Optimize portfolio weights - call appropriate method based on optimizer interface
                 if hasattr(optimizer, 'mean_variance_optimization'):
                     optimization_result = optimizer.mean_variance_optimization(
+                        portfolio_values[-1], 
                         current_expected_returns,
                         cov_matrix
                     )
@@ -416,8 +411,13 @@ class PyTorchBacktestFramework:
                 gc.collect()
                 
                 # Convert optimization results
-                current_weights = dict(zip(unique_current_stocks, optimal_weights))
+                if not np.any(np.isnan(optimal_weights)):
+                    current_weights = dict(zip(unique_current_stocks, optimal_weights))
+                else:
+                    print('Using equal weight')
+                    current_weights = dict(zip(unique_current_stocks, [i / len(unique_current_stocks) for i in range(len(unique_current_stocks))]))
                 
+                # print(current_weights.sum(), current_weights)
                 # Calculate portfolio metrics
                 print("Computing portfolio metrics...")
                 # Account for different compute_portfolio_metrics interfaces
@@ -473,11 +473,6 @@ class PyTorchBacktestFramework:
                         day_return += weight * stock_return
                         invested_weight += weight
                 
-                # Adjust for cash
-                if invested_weight < 1.0:
-                    cash_weight = 1.0 - invested_weight
-                    day_return += cash_weight * 0.0  # Zero cash return
-                
                 # Update portfolio value
                 current_value = portfolio_values[-1] * (1 + day_return)
                 portfolio_values.append(current_value)
@@ -526,7 +521,7 @@ class PyTorchBacktestFramework:
         
         return portfolio_values, weights_history, metrics_history, final_accuracy
 
-    def _prepare_time_series_data_batched(self, start_day, end_day, stock_ids, day_indices, features, returns, window_size, batch_size=100):
+    def _prepare_time_series_data_batched(self, start_day, end_day, stock_ids, day_indices, features, returns, window_size, batch_size=300):
         """
         Optimized implementation to prepare time series data efficiently.
         Processes all data at once without chunking for better performance.
@@ -618,7 +613,7 @@ class PyTorchBacktestFramework:
             else:
                 yield np.array([]), np.array([])
 
-    def collect_and_prepare_training_data(self, model, model_type, start_day, end_day, features_map, window_size, is_training=False, device='cuda'):
+    def collect_and_prepare_training_data(self, model, model_type, start_day, end_day, features_map, window_size, is_training=False, device='cuda', epoch=50):
         """
         Efficient function to collect and prepare training data with GPU optimization.
         Processes all days at once instead of in chunks.
@@ -729,51 +724,13 @@ class PyTorchBacktestFramework:
                 if hasattr(model, 'model'):
                     model.model.to(device)
                 
-                # Try GPU training if possible
-                try:
-                    if hasattr(model, 'fit_with_dataloader') and device == 'cuda':
-                        # Move data to GPU in a single operation
-                        X_tensor = torch.tensor(X_train, dtype=torch.float32, device=device)
-                        y_tensor = torch.tensor(y_train, dtype=torch.float32, device=device)
-                        
-                        # Create dataset and dataloader
-                        train_dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
-                        train_loader = torch.utils.data.DataLoader(
-                            train_dataset, batch_size=64, shuffle=True, pin_memory=False
-                        )
-                        
-                        # Train model directly with GPU data
-                        model.fit_with_dataloader(train_loader, epochs=50, verbose=1)
-                        
-                        # Clean up GPU memory
-                        del X_tensor, y_tensor, train_dataset, train_loader
-                        if device == 'cuda':
-                            torch.cuda.empty_cache()
-                    else:
-                        # Fall back to standard training
-                        model.fit(X_train, y_train, epochs=50, batch_size=64, verbose=1)
-                except RuntimeError as e:
-                    if 'CUDA out of memory' in str(e):
-                        print(f"GPU memory error: {e}")
-                        print("Falling back to CPU training...")
-                        
-                        # Move model to CPU
-                        if hasattr(model, 'model'):
-                            model.model.to('cpu')
-                        
-                        if device == 'cuda':
-                            torch.cuda.empty_cache()
-                        
-                        # Train on CPU
-                        model.fit(X_train, y_train, epochs=25, batch_size=64, verbose=1)
-                    else:
-                        raise e
+                model.fit(X_train, y_train, epochs=epoch, batch_size=32, verbose=1)
                 
                 # Free training data memory
                 del X_train, y_train
                 gc.collect()
             
-            return True, model
+        return True, model
 
     def predict_with_efficient_gpu(self, current_stock_ids, day_idx, features_map, model, window_size, device='cuda'):
         """
@@ -809,6 +766,7 @@ class PyTorchBacktestFramework:
         sequence_features, valid_stock_ids = self.prepare_time_series_batch(
             current_stock_ids, day_idx, features_map, window_size
         )
+        # print(sequence_features.shape, len(valid_stock_ids))
         
         # Make predictions if we have valid sequences
         if sequence_features is not None and len(valid_stock_ids) > 0:
@@ -862,16 +820,12 @@ class PyTorchBacktestFramework:
         Returns:
             ndarray: Array of predicted returns
         """
-        try:
-            # Check if it's a stock-aware model
-            if self.model_type == 'stock_kernel':
-                print('here', model, model.predict)
-                return model.predict(features, stock_ids)
-            else:
-                return model.predict(features)
-        except Exception as e:
-            print(f"Error during regression prediction: {e}")
-            return np.zeros(len(features))
+        # Check if it's a stock-aware model
+        if self.model_type == 'stock_kernel':
+            result = model.predict(features, stock_ids)
+            return result
+        else:
+            return model.predict(features)
     
     def plot_backtest_results(self, portfolio_values, weights_history, metrics_history, model_name, directional_accuracy=None):
         """
